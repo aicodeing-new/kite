@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"sort"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/gin-gonic/gin"
@@ -13,8 +14,33 @@ import (
 	"github.com/zxh326/kite/pkg/model"
 	"github.com/zxh326/kite/pkg/rbac"
 	"gorm.io/gorm"
+	"k8s.io/apimachinery/pkg/util/validation"
 	"k8s.io/client-go/tools/clientcmd"
 )
+
+func normalizeGPUResourceRules(rules []string) (model.SliceString, error) {
+	normalized := make(model.SliceString, 0, len(rules))
+	seen := make(map[string]struct{}, len(rules))
+	for _, rawRule := range rules {
+		rule := strings.TrimSpace(rawRule)
+		if rule == "" {
+			continue
+		}
+		resourceName := strings.TrimPrefix(rule, "!")
+		if resourceName == "" {
+			return nil, fmt.Errorf("invalid GPU resource rule %q", rawRule)
+		}
+		if validationErrors := validation.IsQualifiedName(resourceName); len(validationErrors) > 0 {
+			return nil, fmt.Errorf("invalid GPU resource rule %q: %s", rawRule, strings.Join(validationErrors, "; "))
+		}
+		if _, exists := seen[rule]; exists {
+			continue
+		}
+		seen[rule] = struct{}{}
+		normalized = append(normalized, rule)
+	}
+	return normalized, nil
+}
 
 func (cm *ClusterManager) GetClusters(c *gin.Context) {
 	clusters, errors, defaultContext := cm.snapshotState()
@@ -58,14 +84,15 @@ func (cm *ClusterManager) GetClusterList(c *gin.Context) {
 	result := make([]gin.H, 0, len(clusters))
 	for _, cluster := range clusters {
 		clusterInfo := gin.H{
-			"id":            cluster.ID,
-			"name":          cluster.Name,
-			"description":   cluster.Description,
-			"enabled":       cluster.Enable,
-			"inCluster":     cluster.InCluster,
-			"isDefault":     cluster.IsDefault,
-			"prometheusURL": cluster.PrometheusURL,
-			"config":        "",
+			"id":               cluster.ID,
+			"name":             cluster.Name,
+			"description":      cluster.Description,
+			"enabled":          cluster.Enable,
+			"inCluster":        cluster.InCluster,
+			"isDefault":        cluster.IsDefault,
+			"prometheusURL":    cluster.PrometheusURL,
+			"gpuResourceRules": []string(cluster.GPUResourceRules),
+			"config":           "",
 		}
 
 		if clientSet, exists := clusterState[cluster.Name]; exists {
@@ -83,15 +110,21 @@ func (cm *ClusterManager) GetClusterList(c *gin.Context) {
 
 func (cm *ClusterManager) CreateCluster(c *gin.Context) {
 	var req struct {
-		Name          string `json:"name" binding:"required"`
-		Description   string `json:"description"`
-		Config        string `json:"config"`
-		PrometheusURL string `json:"prometheusURL"`
-		InCluster     bool   `json:"inCluster"`
-		IsDefault     bool   `json:"isDefault"`
+		Name             string   `json:"name" binding:"required"`
+		Description      string   `json:"description"`
+		Config           string   `json:"config"`
+		PrometheusURL    string   `json:"prometheusURL"`
+		GPUResourceRules []string `json:"gpuResourceRules"`
+		InCluster        bool     `json:"inCluster"`
+		IsDefault        bool     `json:"isDefault"`
 	}
 
 	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+	gpuResourceRules, err := normalizeGPUResourceRules(req.GPUResourceRules)
+	if err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
 		return
 	}
@@ -112,13 +145,14 @@ func (cm *ClusterManager) CreateCluster(c *gin.Context) {
 	}
 
 	cluster := &model.Cluster{
-		Name:          req.Name,
-		Description:   req.Description,
-		Config:        model.SecretString(req.Config),
-		PrometheusURL: req.PrometheusURL,
-		InCluster:     req.InCluster,
-		IsDefault:     req.IsDefault,
-		Enable:        true,
+		Name:             req.Name,
+		Description:      req.Description,
+		Config:           model.SecretString(req.Config),
+		PrometheusURL:    req.PrometheusURL,
+		GPUResourceRules: gpuResourceRules,
+		InCluster:        req.InCluster,
+		IsDefault:        req.IsDefault,
+		Enable:           true,
 	}
 
 	if err := model.AddCluster(cluster); err != nil {
@@ -143,16 +177,22 @@ func (cm *ClusterManager) UpdateCluster(c *gin.Context) {
 	}
 
 	var req struct {
-		Name          string `json:"name"`
-		Description   string `json:"description"`
-		Config        string `json:"config"`
-		PrometheusURL string `json:"prometheusURL"`
-		InCluster     bool   `json:"inCluster"`
-		IsDefault     bool   `json:"isDefault"`
-		Enabled       bool   `json:"enabled"`
+		Name             string   `json:"name"`
+		Description      string   `json:"description"`
+		Config           string   `json:"config"`
+		PrometheusURL    string   `json:"prometheusURL"`
+		GPUResourceRules []string `json:"gpuResourceRules"`
+		InCluster        bool     `json:"inCluster"`
+		IsDefault        bool     `json:"isDefault"`
+		Enabled          bool     `json:"enabled"`
 	}
 
 	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+	gpuResourceRules, err := normalizeGPUResourceRules(req.GPUResourceRules)
+	if err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
 		return
 	}
@@ -175,11 +215,12 @@ func (cm *ClusterManager) UpdateCluster(c *gin.Context) {
 	}
 
 	updates := map[string]interface{}{
-		"description":    req.Description,
-		"prometheus_url": req.PrometheusURL,
-		"in_cluster":     req.InCluster,
-		"is_default":     req.IsDefault,
-		"enable":         req.Enabled,
+		"description":        req.Description,
+		"prometheus_url":     req.PrometheusURL,
+		"gpu_resource_rules": gpuResourceRules,
+		"in_cluster":         req.InCluster,
+		"is_default":         req.IsDefault,
+		"enable":             req.Enabled,
 	}
 
 	if req.Name != "" && req.Name != cluster.Name {

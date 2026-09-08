@@ -37,6 +37,7 @@ function createClusterFormData(cluster?: Cluster | null) {
     description: cluster?.description || '',
     config: cluster?.config || '',
     prometheusURL: cluster?.prometheusURL || '',
+    gpuResourceRules: cluster?.gpuResourceRules || [],
     enabled: cluster?.enabled ?? true,
     isDefault: cluster?.isDefault ?? false,
     inCluster: cluster?.inCluster ?? false,
@@ -78,7 +79,7 @@ function ClusterDialogContent({
     onSubmit(formData)
   }
 
-  const handleChange = (field: string, value: string | boolean) => {
+  const handleChange = (field: string, value: string | boolean | string[]) => {
     setFormData((prev) => ({
       ...prev,
       [field]: value,
@@ -202,6 +203,34 @@ function ClusterDialogContent({
             value={formData.prometheusURL}
             onChange={(e) => handleChange('prometheusURL', e.target.value)}
             type="url"
+          />
+        </div>
+
+        <div className="space-y-2">
+          <Label htmlFor="gpu-resource-rules">
+            {t(
+              'clusterManagement.form.gpuResourceRules.label',
+              'Additional GPU resource rules'
+            )}
+          </Label>
+          <p className="text-xs text-muted-foreground">
+            {t(
+              'clusterManagement.form.gpuResourceRules.help',
+              'GPU resources are detected automatically. Add one exact Kubernetes resource name per line for non-standard devices; prefix a name with ! to exclude it.'
+            )}
+          </p>
+          <Textarea
+            id="gpu-resource-rules"
+            value={formData.gpuResourceRules.join('\n')}
+            onChange={(e) =>
+              handleChange('gpuResourceRules', e.target.value.split('\n'))
+            }
+            placeholder={t(
+              'clusterManagement.form.gpuResourceRules.placeholder',
+              'huawei.com/Ascend910\n!example.com/gpu.memory'
+            )}
+            rows={3}
+            className="font-mono text-sm"
           />
         </div>
 

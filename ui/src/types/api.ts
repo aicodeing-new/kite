@@ -435,6 +435,7 @@ export interface Cluster {
   createdAt: string
   updatedAt: string
   prometheusURL?: string
+  gpuResourceRules?: string[]
   error?: string
 }
 

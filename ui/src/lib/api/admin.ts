@@ -20,6 +20,7 @@ export interface ClusterCreateRequest {
   description?: string
   config?: string
   prometheusURL?: string
+  gpuResourceRules?: string[]
   inCluster?: boolean
   isDefault?: boolean
 }

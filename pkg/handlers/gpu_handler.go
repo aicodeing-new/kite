@@ -4,17 +4,73 @@ import (
 	"context"
 	"fmt"
 	"net/http"
+	"regexp"
 	"sort"
 	"strings"
 	"time"
 
 	"github.com/gin-gonic/gin"
 	"github.com/zxh326/kite/pkg/cluster"
+	"github.com/zxh326/kite/pkg/model"
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime/schema"
+	"k8s.io/klog/v2"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 )
+
+var automaticGPUResourcePattern = regexp.MustCompile(`(?i)(^gpu$|^gpu\.[^/]+/|/(?:[^/]+-)?v?gpu(?:$|\.)|/mig-[^/]+$)`)
+
+type gpuResourceMatcher struct {
+	included map[string]struct{}
+	excluded map[string]struct{}
+}
+
+func newGPUResourceMatcher(rules []string) gpuResourceMatcher {
+	matcher := gpuResourceMatcher{
+		included: make(map[string]struct{}),
+		excluded: make(map[string]struct{}),
+	}
+	for _, rawRule := range rules {
+		rule := strings.ToLower(strings.TrimSpace(rawRule))
+		if rule == "" {
+			continue
+		}
+		if excluded := strings.TrimPrefix(rule, "!"); excluded != rule {
+			if excluded != "" {
+				matcher.excluded[excluded] = struct{}{}
+			}
+			continue
+		}
+		matcher.included[rule] = struct{}{}
+	}
+	return matcher
+}
+
+func (m gpuResourceMatcher) matches(name string) bool {
+	name = strings.ToLower(strings.TrimSpace(name))
+	if _, excluded := m.excluded[name]; excluded {
+		return false
+	}
+	if _, included := m.included[name]; included {
+		return true
+	}
+	return automaticGPUResourcePattern.MatchString(name)
+}
+
+func gpuResourceMatcherForCluster(clusterName string) gpuResourceMatcher {
+	if clusterName == "" || model.DB == nil {
+		return newGPUResourceMatcher(nil)
+	}
+	configuredCluster, err := model.GetClusterByName(clusterName)
+	if err != nil {
+		// GPU overview remains useful with automatic detection even if its optional
+		// per-cluster overrides cannot be loaded.
+		klog.Warningf("Failed to load GPU resource rules for cluster %s: %v", clusterName, err)
+		return newGPUResourceMatcher(nil)
+	}
+	return newGPUResourceMatcher(configuredCluster.GPUResourceRules)
+}
 
 // GPUNodeInfo 存储节点 GPU 信息
 type GPUNodeInfo struct {
@@ -71,9 +127,10 @@ func GetGPUOverview(c *gin.Context) {
 	defer cancel()
 
 	cs := c.MustGet("cluster").(*cluster.ClientSet)
+	matcher := gpuResourceMatcherForCluster(cs.Name)
 
 	// 获取 GPU 节点信息
-	nodes, err := getGPUNodes(ctx, cs)
+	nodes, err := getGPUNodes(ctx, cs, matcher)
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": fmt.Sprintf("Failed to get GPU nodes: %v", err)})
 		return
@@ -101,7 +158,7 @@ func GetGPUOverview(c *gin.Context) {
 	}
 
 	// 获取 Pod GPU 使用情况
-	nodeGPUUsage, err := getGPUUsageFromPods(ctx, cs)
+	nodeGPUUsage, err := getGPUUsageFromPods(ctx, cs, matcher)
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": fmt.Sprintf("Failed to get GPU usage from pods: %v", err)})
 		return
@@ -114,7 +171,7 @@ func GetGPUOverview(c *gin.Context) {
 	}
 
 	// 获取 LWS 统计信息
-	namespaceStats, modelStats, noModelCount, roleStatsMap := getLWSStats(ctx, cs)
+	namespaceStats, modelStats, noModelCount, roleStatsMap := getLWSStats(ctx, cs, matcher)
 
 	// 生成概览数据
 	overview := buildGPUOverview(nodes, namespaceStats, modelStats, noModelCount, roleStatsMap)
@@ -123,39 +180,33 @@ func GetGPUOverview(c *gin.Context) {
 }
 
 // getGPUNodes 获取所有 GPU 节点
-func getGPUNodes(ctx context.Context, cs *cluster.ClientSet) ([]GPUNodeInfo, error) {
+func getGPUNodes(ctx context.Context, cs *cluster.ClientSet, matcher gpuResourceMatcher) ([]GPUNodeInfo, error) {
 	var nodeList corev1.NodeList
 	if err := cs.K8sClient.List(ctx, &nodeList); err != nil {
 		return nil, err
 	}
 
 	var gpuNodes []GPUNodeInfo
-	gpuKeys := []string{
-		"nvidia.com/gpu",
-		"amd.com/gpu",
-		"mars-tech.com/gpu",
-		"gpu",
-		"alpha.kubernetes.io/nvidia-gpu",
-	}
 
 	for _, node := range nodeList.Items {
 		var gpuCapacity int64
 		var gpuAllocatable int64
-		var gpuType string
+		var gpuTypes []string
 
 		// 检查 GPU 资源
-		for _, key := range gpuKeys {
-			if qty, ok := node.Status.Capacity[corev1.ResourceName(key)]; ok {
-				gpuCapacity = qty.Value()
-				if allocQty, ok := node.Status.Allocatable[corev1.ResourceName(key)]; ok {
-					gpuAllocatable = allocQty.Value()
-				}
-				gpuType = key
-				break
+		for resourceName, qty := range node.Status.Capacity {
+			if !matcher.matches(string(resourceName)) || qty.Value() <= 0 {
+				continue
 			}
+			gpuCapacity += qty.Value()
+			if allocQty, ok := node.Status.Allocatable[resourceName]; ok {
+				gpuAllocatable += allocQty.Value()
+			}
+			gpuTypes = append(gpuTypes, string(resourceName))
 		}
 
 		if gpuCapacity > 0 {
+			sort.Strings(gpuTypes)
 			// 收集污点信息
 			var taints []string
 			for _, taint := range node.Spec.Taints {
@@ -166,7 +217,7 @@ func getGPUNodes(ctx context.Context, cs *cluster.ClientSet) ([]GPUNodeInfo, err
 				NodeName:    node.Name,
 				Capacity:    gpuCapacity,
 				Allocatable: gpuAllocatable,
-				GPUType:     gpuType,
+				GPUType:     strings.Join(gpuTypes, ","),
 				Taints:      taints,
 			})
 		}
@@ -176,20 +227,13 @@ func getGPUNodes(ctx context.Context, cs *cluster.ClientSet) ([]GPUNodeInfo, err
 }
 
 // getGPUUsageFromPods 从 Pod 获取 GPU 使用情况
-func getGPUUsageFromPods(ctx context.Context, cs *cluster.ClientSet) (map[string]int64, error) {
+func getGPUUsageFromPods(ctx context.Context, cs *cluster.ClientSet, matcher gpuResourceMatcher) (map[string]int64, error) {
 	var podList corev1.PodList
 	if err := cs.K8sClient.List(ctx, &podList); err != nil {
 		return nil, err
 	}
 
 	nodeGPUUsage := make(map[string]int64)
-	gpuKeys := []string{
-		"nvidia.com/gpu",
-		"amd.com/gpu",
-		"mars-tech.com/gpu",
-		"gpu",
-		"alpha.kubernetes.io/nvidia-gpu",
-	}
 
 	for _, pod := range podList.Items {
 		// 只统计 Running 和 Pending 的 Pod
@@ -203,16 +247,11 @@ func getGPUUsageFromPods(ctx context.Context, cs *cluster.ClientSet) (map[string
 
 		var totalGPU int64
 		for _, container := range pod.Spec.Containers {
-			for _, key := range gpuKeys {
-				resourceName := corev1.ResourceName(key)
-				// 优先使用 requests
-				if qty, ok := container.Resources.Requests[resourceName]; ok {
-					totalGPU += qty.Value()
-				} else if qty, ok := container.Resources.Limits[resourceName]; ok {
-					// 其次使用 limits
-					totalGPU += qty.Value()
-				}
+			containerGPU := gpuQuantityFromResourceList(container.Resources.Requests, matcher)
+			if containerGPU == 0 {
+				containerGPU = gpuQuantityFromResourceList(container.Resources.Limits, matcher)
 			}
+			totalGPU += containerGPU
 		}
 
 		if totalGPU > 0 {
@@ -223,8 +262,18 @@ func getGPUUsageFromPods(ctx context.Context, cs *cluster.ClientSet) (map[string
 	return nodeGPUUsage, nil
 }
 
+func gpuQuantityFromResourceList(resources corev1.ResourceList, matcher gpuResourceMatcher) int64 {
+	var total int64
+	for resourceName, quantity := range resources {
+		if matcher.matches(string(resourceName)) {
+			total += quantity.Value()
+		}
+	}
+	return total
+}
+
 // getLWSStats 从 LWS (LeaderWorkerSet) 获取统计信息
-func getLWSStats(ctx context.Context, cs *cluster.ClientSet) (map[string]int64, map[string]int64, int64, map[string]*GPUModelRoleStat) {
+func getLWSStats(ctx context.Context, cs *cluster.ClientSet, matcher gpuResourceMatcher) (map[string]int64, map[string]int64, int64, map[string]*GPUModelRoleStat) {
 	namespaceStats := make(map[string]int64)
 	modelStats := make(map[string]int64)
 	roleStatsMap := make(map[string]*GPUModelRoleStat)
@@ -242,8 +291,6 @@ func getLWSStats(ctx context.Context, cs *cluster.ClientSet) (map[string]int64, 
 		return namespaceStats, modelStats, noModelCount, roleStatsMap
 	}
 
-	gpuKeys := []string{"nvidia.com/gpu", "amd.com/gpu", "mars-tech.com/gpu", "gpu"}
-
 	for _, item := range lwsList.Items {
 		namespace := item.GetNamespace()
 
@@ -257,10 +304,10 @@ func getLWSStats(ctx context.Context, cs *cluster.ClientSet) (map[string]int64, 
 		}
 
 		// 获取 leader GPU
-		leaderGPU := extractGPUFromContainers(item.Object, []string{"spec", "leaderWorkerTemplate", "leaderTemplate", "spec", "containers"}, gpuKeys)
+		leaderGPU := extractGPUFromContainers(item.Object, []string{"spec", "leaderWorkerTemplate", "leaderTemplate", "spec", "containers"}, matcher)
 
 		// 获取 worker GPU
-		workerGPU := extractGPUFromContainers(item.Object, []string{"spec", "leaderWorkerTemplate", "workerTemplate", "spec", "containers"}, gpuKeys)
+		workerGPU := extractGPUFromContainers(item.Object, []string{"spec", "leaderWorkerTemplate", "workerTemplate", "spec", "containers"}, matcher)
 
 		// 计算总 GPU: replicas × (leaderGPU + workerGPU × (size-1))
 		totalGPU := replicas * (leaderGPU + workerGPU*(size-1))
@@ -326,7 +373,7 @@ func getLWSStats(ctx context.Context, cs *cluster.ClientSet) (map[string]int64, 
 }
 
 // extractGPUFromContainers 从容器配置中提取 GPU 数量
-func extractGPUFromContainers(obj map[string]interface{}, path []string, gpuKeys []string) int64 {
+func extractGPUFromContainers(obj map[string]interface{}, path []string, matcher gpuResourceMatcher) int64 {
 	containers, _, _ := unstructured.NestedSlice(obj, path...)
 	var totalGPU int64
 
@@ -336,42 +383,45 @@ func extractGPUFromContainers(obj map[string]interface{}, path []string, gpuKeys
 			continue
 		}
 
+		var containerGPU int64
 		// 检查 requests
 		if requests, found, _ := unstructured.NestedMap(containerMap, "resources", "requests"); found {
-			for _, key := range gpuKeys {
-				if gpuValue, ok := requests[key]; ok {
-					if gpuInt, ok := gpuValue.(int64); ok {
-						totalGPU += gpuInt
-					} else if gpuStr, ok := gpuValue.(string); ok {
-						var gpu int64
-						fmt.Sscanf(gpuStr, "%d", &gpu)
-						totalGPU += gpu
-					}
-					break
-				}
-			}
+			containerGPU = gpuQuantityFromUnstructuredMap(requests, matcher)
 		}
 
 		// 如果没有 requests，检查 limits
-		if totalGPU == 0 {
+		if containerGPU == 0 {
 			if limits, found, _ := unstructured.NestedMap(containerMap, "resources", "limits"); found {
-				for _, key := range gpuKeys {
-					if gpuValue, ok := limits[key]; ok {
-						if gpuInt, ok := gpuValue.(int64); ok {
-							totalGPU += gpuInt
-						} else if gpuStr, ok := gpuValue.(string); ok {
-							var gpu int64
-							fmt.Sscanf(gpuStr, "%d", &gpu)
-							totalGPU += gpu
-						}
-						break
-					}
-				}
+				containerGPU = gpuQuantityFromUnstructuredMap(limits, matcher)
 			}
 		}
+		totalGPU += containerGPU
 	}
 
 	return totalGPU
+}
+
+func gpuQuantityFromUnstructuredMap(resources map[string]interface{}, matcher gpuResourceMatcher) int64 {
+	var total int64
+	for resourceName, value := range resources {
+		if !matcher.matches(resourceName) {
+			continue
+		}
+		switch gpuValue := value.(type) {
+		case int64:
+			total += gpuValue
+		case int:
+			total += int64(gpuValue)
+		case float64:
+			total += int64(gpuValue)
+		case string:
+			var gpu int64
+			if _, err := fmt.Sscanf(gpuValue, "%d", &gpu); err == nil {
+				total += gpu
+			}
+		}
+	}
+	return total
 }
 
 // buildGPUOverview 构建 GPU 概览数据

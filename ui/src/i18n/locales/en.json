@@ -330,6 +330,11 @@
         "label": "Description",
         "placeholder": "Brief description of this cluster"
       },
+      "gpuResourceRules": {
+        "help": "GPU resources are detected automatically. Add one exact Kubernetes resource name per line for non-standard devices; prefix a name with ! to exclude it.",
+        "label": "Additional GPU resource rules",
+        "placeholder": "huawei.com/Ascend910\n!example.com/gpu.memory"
+      },
       "enabled": {
         "label": "Enable Cluster"
       },

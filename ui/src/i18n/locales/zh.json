@@ -330,6 +330,11 @@
         "label": "描述",
         "placeholder": "此集群的简要描述"
       },
+      "gpuResourceRules": {
+        "help": "GPU 资源会自动识别。非标准设备可每行添加一个完整的 Kubernetes 资源名；在资源名前加 ! 可排除误识别项。",
+        "label": "额外 GPU 资源规则",
+        "placeholder": "huawei.com/Ascend910\n!example.com/gpu.memory"
+      },
       "enabled": {
         "label": "启用集群"
       },
