@@ -1,6 +1,7 @@
 import { createBrowserRouter } from 'react-router-dom'
 
 import App, { StandaloneAIChatApp } from './App'
+import { ProxyAccessPage } from './pages/proxy-access'
 import { InitCheckRoute } from './components/init-check-route'
 import { ProtectedRoute } from './components/protected-route'
 import { getSubPath } from './lib/subpath'
@@ -16,6 +17,8 @@ const subPath = getSubPath()
 
 export const router = createBrowserRouter(
   [
+    { path: '/proxy/authorize', element: <ProxyAccessPage /> },
+    { path: '/proxy/devices', element: <ProxyAccessPage /> },
     {
       path: '/setup',
       element: <InitializationPage />,

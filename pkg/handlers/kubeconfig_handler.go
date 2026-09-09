@@ -4,8 +4,12 @@ import (
 	"context"
 	"fmt"
 	"net/http"
+	"os"
+	"strings"
+	"time"
 
 	"github.com/gin-gonic/gin"
+	"github.com/zxh326/kite/pkg/auth"
 	"github.com/zxh326/kite/pkg/cluster"
 	"github.com/zxh326/kite/pkg/model"
 	"github.com/zxh326/kite/pkg/rbac"
@@ -35,7 +39,7 @@ func ProxyKubeconfigHandler(cm *cluster.ClusterManager) gin.HandlerFunc {
 		}
 
 		// Only API-key users may call this endpoint.
-		if user.Provider != "api_key" {
+		if _, device := c.Get(auth.ProxySessionKey); user.Provider != "api_key" && !device {
 			c.JSON(http.StatusForbidden, gin.H{"error": "this endpoint is only available to API-key users"})
 			return
 		}
@@ -106,6 +110,7 @@ func ProxyKubeconfigHandler(cm *cluster.ClusterManager) gin.HandlerFunc {
 		}
 
 		klog.V(1).Infof("ProxyKubeconfig: Returning %d cluster(s) for user %s", len(results), user.Key())
+		c.Header("Cache-Control", "no-store")
 		c.JSON(http.StatusOK, gin.H{"clusters": results})
 	}
 }
@@ -126,7 +131,7 @@ func ProxyNamespacesHandler(cm *cluster.ClusterManager) gin.HandlerFunc {
 			c.JSON(http.StatusUnauthorized, gin.H{"error": "unauthorized"})
 			return
 		}
-		if user.Provider != "api_key" {
+		if _, device := c.Get(auth.ProxySessionKey); user.Provider != "api_key" && !device {
 			c.JSON(http.StatusForbidden, gin.H{"error": "this endpoint is only available to API-key users"})
 			return
 		}
@@ -161,18 +166,22 @@ func ProxyNamespacesHandler(cm *cluster.ClusterManager) gin.HandlerFunc {
 			}
 
 			// If wildcard, expand to actual namespace list from the cluster.
-			if len(allowed) == 1 && allowed[0] == "*" {
+			if len(allowed) > 0 {
 				if cs.K8sClient != nil && cs.K8sClient.ClientSet != nil {
+					ctx, cancel := context.WithTimeout(c.Request.Context(), 10*time.Second)
 					nsList, err := cs.K8sClient.ClientSet.CoreV1().Namespaces().List(
-						context.Background(), metav1.ListOptions{},
+						ctx, metav1.ListOptions{},
 					)
+					cancel()
 					if err != nil {
 						klog.Warningf("ProxyNamespaces: failed to list namespaces for cluster %s: %v", name, err)
 						// Fall back to ["*"] rather than hard-failing.
 					} else {
 						expanded := make([]string, 0, len(nsList.Items))
 						for _, ns := range nsList.Items {
-							expanded = append(expanded, ns.Name)
+							if rbac.CanProxy(user, name, ns.Name) {
+								expanded = append(expanded, ns.Name)
+							}
 						}
 						allowed = expanded
 					}
@@ -201,6 +210,19 @@ func ProxyNamespacesHandler(cm *cluster.ClusterManager) gin.HandlerFunc {
 // generateKubeconfigFromRestConfig creates a kubeconfig YAML from a rest.Config.
 // This is used for InCluster configurations or when no stored kubeconfig is available.
 func generateKubeconfigFromRestConfig(clusterName string, restConfig *rest.Config) (string, error) {
+	restConfig = rest.CopyConfig(restConfig)
+	if err := rest.LoadTLSFiles(restConfig); err != nil {
+		return "", fmt.Errorf("cannot inline cluster TLS credentials: %w", err)
+	}
+	if restConfig.BearerTokenFile != "" {
+		token, err := os.ReadFile(restConfig.BearerTokenFile)
+		if err != nil {
+			return "", fmt.Errorf("cannot read cluster token: %w", err)
+		}
+		restConfig.BearerToken = strings.TrimSpace(string(token))
+		clear(token)
+		restConfig.BearerTokenFile = ""
+	}
 	config := clientcmdapi.NewConfig()
 
 	// Create cluster entry

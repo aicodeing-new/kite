@@ -108,6 +108,17 @@ export function AuthProvider({ children }: AuthProviderProps) {
   >([])
   const [oauthProviders, setOAuthProviders] = useState<string[]>([])
 
+  useEffect(() => {
+    if (!user) return
+    const pending = sessionStorage.getItem('kite.proxy.return')
+    if (pending) {
+      sessionStorage.removeItem('kite.proxy.return')
+      if (pending.startsWith('/proxy/authorize?') || pending === '/proxy/devices') {
+        window.location.replace(withSubPath(pending))
+      }
+    }
+  }, [user])
+
   const { refetch: refetchAuthProviders } = useAuthProviders({
     enabled: false,
   })

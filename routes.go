@@ -49,6 +49,11 @@ func registerAuthRoutes(r *gin.RouterGroup, authHandler *auth.AuthHandler) {
 	authGroup.POST("/logout", authHandler.Logout)
 	authGroup.POST("/refresh", authHandler.RefreshToken)
 	authGroup.GET("/user", authHandler.RequireAuth(), authHandler.GetUser)
+	authGroup.POST("/proxy/token", middleware.LoginRateLimit(), auth.ProxyToken)
+	devices := authGroup.Group("/proxy", authHandler.RequireAuth(), auth.RequireProxyBrowser)
+	devices.POST("/authorize", auth.AuthorizeProxy)
+	devices.GET("/sessions", auth.ListProxySessions)
+	devices.DELETE("/sessions/:id", auth.RevokeProxySession)
 }
 
 func registerUserRoutes(r *gin.RouterGroup, authHandler *auth.AuthHandler, cm *cluster.ClusterManager) {
@@ -150,7 +155,9 @@ func registerAdminRoutes(r *gin.RouterGroup, authHandler *auth.AuthHandler, cm *
 	// Proxy kubeconfig endpoint – auth required, no admin required (API-key users with
 	// proxy permission can call this to retrieve kubeconfigs for kite-proxy).
 	proxyAPI := r.Group("/api/v1/proxy")
-	proxyAPI.Use(authHandler.RequireAuth())
+	proxyAPI.Use(authHandler.RequireProxyAuth())
+	proxyAPI.GET("/session", auth.CurrentProxySession)
+	proxyAPI.DELETE("/session", auth.CurrentProxySession)
 	proxyAPI.GET("/kubeconfig", handlers.ProxyKubeconfigHandler(cm))
 	proxyAPI.GET("/namespaces", handlers.ProxyNamespacesHandler(cm))
 }

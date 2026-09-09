@@ -105,6 +105,8 @@ func InitDB() {
 	models := []interface{}{
 		User{},
 		UserGroup{},
+		ProxySession{},
+		ProxyAuthorizationCode{},
 		Cluster{},
 		GeneralSetting{},
 		LDAPSetting{},
