@@ -13,6 +13,7 @@ import (
 	"path/filepath"
 	"strconv"
 	"testing"
+	"time"
 
 	"github.com/gin-gonic/gin"
 	"github.com/zxh326/kite/pkg/common"
@@ -455,5 +456,91 @@ func TestTokenHash(t *testing.T) {
 	}
 	if tokenHash("input-1") == tokenHash("input-2") {
 		t.Fatal("different inputs must hash differently")
+	}
+}
+
+func TestProxySessionWaiterRegistry(t *testing.T) {
+	ch1 := make(chan struct{}, 1)
+	ch2 := make(chan struct{}, 1)
+	addProxySessionWaiter(999, ch1)
+	addProxySessionWaiter(999, ch2)
+	removeProxySessionWaiter(999, ch1)
+	notifyProxySessionWaiters(999)
+	select {
+	case <-ch1:
+		t.Fatal("removed waiter must not be notified")
+	default:
+	}
+	select {
+	case <-ch2:
+	default:
+		t.Fatal("registered waiter must be notified")
+	}
+	// notify on an empty id must not panic
+	notifyProxySessionWaiters(12345)
+}
+
+func longPollContext(t *testing.T, accessToken string, wait string) (*gin.Context, *httptest.ResponseRecorder, chan int) {
+	t.Helper()
+	h := &AuthHandler{}
+	w := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(w)
+	c.Request = httptest.NewRequest(http.MethodGet, "/api/v1/proxy/session?wait="+wait, nil)
+	c.Request.Header.Set("Authorization", "Bearer "+accessToken)
+	h.RequireProxyAuth()(c)
+	if c.IsAborted() {
+		t.Fatalf("auth failed: %d", w.Code)
+	}
+	done := make(chan int, 1)
+	go func() {
+		CurrentProxySession(c)
+		done <- w.Code
+	}()
+	return c, w, done
+}
+
+func TestCurrentProxySessionLongPollRevocation(t *testing.T) {
+	user, tokens := proxyTestSession(t, "longpoll-revoke-test")
+	_, _, done := longPollContext(t, tokens["access_token"].(string), "30")
+
+	select {
+	case <-done:
+		t.Fatal("long-poll returned before revocation")
+	case <-time.After(300 * time.Millisecond):
+	}
+
+	// Revoke through the real devices-page path: DB update + waiter wake-up.
+	w := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(w)
+	c.Request = httptest.NewRequest(http.MethodDelete, "/api/auth/proxy/sessions/:id", nil)
+	c.Set("user", user)
+	c.Params = gin.Params{{Key: "id", Value: strconv.FormatUint(uint64(tokens["session_id"].(float64)), 10)}}
+	RevokeProxySession(c)
+	c.Writer.WriteHeaderNow()
+	if w.Code != http.StatusNoContent {
+		t.Fatalf("revoke failed: %d", w.Code)
+	}
+
+	select {
+	case code := <-done:
+		if code != http.StatusUnauthorized {
+			t.Fatalf("revoked long-poll must return 401, got %d", code)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("revocation did not wake the long-poll")
+	}
+}
+
+func TestCurrentProxySessionLongPollTimeout(t *testing.T) {
+	_, tokens := proxyTestSession(t, "longpoll-timeout-test")
+	_, _, done := longPollContext(t, tokens["access_token"].(string), "1")
+
+	select {
+	case code := <-done:
+		if code != http.StatusOK {
+			t.Fatalf("long-poll without revocation must return 200, got %d", code)
+		}
+	case <-time.After(3 * time.Second):
+		t.Fatal("long-poll did not return on wait timeout")
 	}
 }

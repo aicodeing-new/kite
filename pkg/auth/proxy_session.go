@@ -11,6 +11,7 @@ import (
 	"regexp"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/gin-gonic/gin"
@@ -222,13 +223,88 @@ func ListProxySessions(c *gin.Context) {
 }
 func RevokeProxySession(c *gin.Context) {
 	user := c.MustGet("user").(model.User)
+	var id uint
+	if parsed, err := strconv.ParseUint(c.Param("id"), 10, 64); err == nil {
+		id = uint(parsed)
+	}
 	result := model.DB.Model(&model.ProxySession{}).Where("id = ? AND user_id = ?", c.Param("id"), user.ID).Update("revoked_at", time.Now())
 	if result.Error != nil {
 		c.JSON(500, gin.H{"error": "cannot revoke device"})
 		return
 	}
+	if result.RowsAffected > 0 && id != 0 {
+		notifyProxySessionWaiters(id)
+	}
 	c.Status(204)
 }
+
+// Long-polling support: clients may hold GET /api/v1/proxy/session?wait=Ns
+// open so a revocation wakes them within milliseconds instead of at their
+// next polling interval.
+var (
+	proxyWaitersMu sync.Mutex
+	proxyWaiters   = map[uint][]chan struct{}{}
+)
+
+func addProxySessionWaiter(id uint, ch chan struct{}) {
+	proxyWaitersMu.Lock()
+	defer proxyWaitersMu.Unlock()
+	proxyWaiters[id] = append(proxyWaiters[id], ch)
+}
+
+func removeProxySessionWaiter(id uint, ch chan struct{}) {
+	proxyWaitersMu.Lock()
+	defer proxyWaitersMu.Unlock()
+	list := proxyWaiters[id]
+	for i, c := range list {
+		if c == ch {
+			proxyWaiters[id] = append(list[:i], list[i+1:]...)
+			break
+		}
+	}
+	if len(proxyWaiters[id]) == 0 {
+		delete(proxyWaiters, id)
+	}
+}
+
+func notifyProxySessionWaiters(id uint) {
+	proxyWaitersMu.Lock()
+	list := proxyWaiters[id]
+	delete(proxyWaiters, id)
+	proxyWaitersMu.Unlock()
+	for _, ch := range list {
+		close(ch)
+	}
+}
+
+// sessionWaitSeconds parses the ?wait= parameter, clamped to 1-60 seconds.
+func sessionWaitSeconds(c *gin.Context) int {
+	secs, err := strconv.Atoi(c.Query("wait"))
+	if err != nil || secs < 1 {
+		return 0
+	}
+	if secs > 60 {
+		secs = 60
+	}
+	return secs
+}
+
+// proxySessionStillValid re-checks a session after a long-poll wait and
+// writes a 401 when it was revoked or the owning user got disabled meanwhile.
+func proxySessionStillValid(c *gin.Context, id uint) bool {
+	var session model.ProxySession
+	if model.DB.Where("id = ? AND revoked_at IS NULL AND expires_at > ?", id, time.Now()).First(&session).Error != nil {
+		c.AbortWithStatusJSON(401, gin.H{"error": "device session expired or revoked", "code": "unauthorized"})
+		return false
+	}
+	user, err := model.GetUserByID(uint64(session.UserID))
+	if err != nil || !user.Enabled {
+		c.AbortWithStatusJSON(401, gin.H{"error": "user disabled", "code": "unauthorized"})
+		return false
+	}
+	return true
+}
+
 func CurrentProxySession(c *gin.Context) {
 	if c.Request.Method == http.MethodDelete {
 		id, exists := c.Get(ProxySessionKey)
@@ -240,8 +316,27 @@ func CurrentProxySession(c *gin.Context) {
 			c.Status(500)
 			return
 		}
+		notifyProxySessionWaiters(id.(uint))
 		c.Status(204)
 		return
+	}
+	// Long-poll: hold the request open until revocation or the wait deadline.
+	if wait := sessionWaitSeconds(c); wait > 0 {
+		id := c.GetUint(ProxySessionKey)
+		notify := make(chan struct{}, 1)
+		addProxySessionWaiter(id, notify)
+		defer removeProxySessionWaiter(id, notify)
+		timer := time.NewTimer(time.Duration(wait) * time.Second)
+		defer timer.Stop()
+		select {
+		case <-c.Request.Context().Done():
+			return
+		case <-notify:
+		case <-timer.C:
+		}
+		if !proxySessionStillValid(c, id) {
+			return
+		}
 	}
 	user := c.MustGet("user").(model.User)
 	c.Header("Cache-Control", "no-store")
