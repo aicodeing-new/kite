@@ -60,6 +60,14 @@ func (h *NodeTerminalHandler) HandleNodeTerminalWebSocket(c *gin.Context) {
 			wsutil.SendErrorMessage(conn, fmt.Sprintf("Node %s not found", nodeName))
 			return
 		}
+		// Deny non-admin users from opening a host shell on control-plane nodes.
+		if !rbac.UserHasRole(user, model.DefaultAdminRole.Name) && common.IsControlPlaneNode(node) {
+			klog.Warningf("non-admin user %s denied exec on control-plane node %s on cluster %s",
+				user.Username, nodeName, cs.Name)
+			wsutil.SendErrorMessage(conn, fmt.Sprintf(
+				"Access denied: exec into control-plane node %s requires admin role", nodeName))
+			return
+		}
 		setting, err := model.GetGeneralSetting()
 		if err != nil {
 			klog.Errorf("Failed to load general setting: %v", err)
