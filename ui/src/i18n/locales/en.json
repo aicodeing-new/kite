@@ -629,6 +629,12 @@
         "providers": {
           "anthropic": "Anthropic Compatible",
           "openai": "OpenAI Compatible"
+        },
+        "reasoningEffort": "Reasoning Effort",
+        "reasoningEfforts": {
+          "high": "High",
+          "low": "Low",
+          "max": "Max"
         }
       },
       "title": "AI Agent"

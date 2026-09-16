@@ -58,6 +58,7 @@ func (a *Agent) simpleChatOpenAI(ctx context.Context, systemPrompt, userMessage 
 		Model:               openai.ChatModel(a.model),
 		Messages:            messages,
 		MaxCompletionTokens: openai.Int(int64(a.maxTokens)),
+		ReasoningEffort:     a.openAIReasoningEffort(),
 	})
 	if err != nil {
 		return "", fmt.Errorf("openai simple chat: %w", err)

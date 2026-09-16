@@ -63,6 +63,50 @@ func TestIsGeneralAIProviderSupported(t *testing.T) {
 	}
 }
 
+func TestNormalizeGeneralAIReasoningEffort(t *testing.T) {
+	tests := []struct {
+		name     string
+		input    string
+		expected string
+	}{
+		{"low", " LOW ", "low"},
+		{"high", "High", "high"},
+		{"max", "max", "max"},
+		{"empty", "", DefaultGeneralAIReasoningEffort},
+		{"unknown", "medium", DefaultGeneralAIReasoningEffort},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := NormalizeGeneralAIReasoningEffort(tt.input); got != tt.expected {
+				t.Fatalf("NormalizeGeneralAIReasoningEffort() = %q, want %q", got, tt.expected)
+			}
+		})
+	}
+}
+
+func TestIsGeneralAIReasoningEffortSupported(t *testing.T) {
+	tests := []struct {
+		name  string
+		input string
+		want  bool
+	}{
+		{"low", "low", true},
+		{"high", " HIGH ", true},
+		{"max", "max", true},
+		{"empty", "", false},
+		{"unknown", "medium", false},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := IsGeneralAIReasoningEffortSupported(tt.input); got != tt.want {
+				t.Fatalf("IsGeneralAIReasoningEffortSupported() = %v, want %v", got, tt.want)
+			}
+		})
+	}
+}
+
 func TestDefaultGeneralAIModelByProvider(t *testing.T) {
 	tests := []struct {
 		name     string

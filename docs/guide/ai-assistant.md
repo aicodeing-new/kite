@@ -13,7 +13,7 @@ Kite includes a built-in AI assistant for Kubernetes operations. It can explain 
    - `OpenAI Compatible`
    - `Anthropic Compatible`
 5. Fill in `Model` and `API Key`.
-6. Optionally set `Base URL` and `Max Tokens`.
+6. Optionally set `Base URL`, `Max Tokens`, and `Reasoning Effort` (thinking depth for reasoning models such as GLM-5.x, `low` by default).
 7. Save the settings.
 
 If you use a self-hosted or proxy-compatible endpoint, set the `Base URL` to your API endpoint.

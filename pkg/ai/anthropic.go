@@ -6,6 +6,7 @@ import (
 	"strings"
 
 	anthropic "github.com/anthropics/anthropic-sdk-go"
+	anthropicoption "github.com/anthropics/anthropic-sdk-go/option"
 	"github.com/gin-gonic/gin"
 	"k8s.io/klog/v2"
 )
@@ -79,6 +80,17 @@ func (a *Agent) continueChatAnthropicWithToolResult(c *gin.Context, session pend
 	return nil
 }
 
+// anthropicSessionHeader returns request options attaching the conversation
+// session id, for cache-aware LLM gateway routing.
+func (a *Agent) anthropicSessionHeader() []anthropicoption.RequestOption {
+	if a.sessionID == "" {
+		return nil
+	}
+	return []anthropicoption.RequestOption{
+		anthropicoption.WithHeader(AISessionIDHeader, a.sessionID),
+	}
+}
+
 func (a *Agent) runAnthropicConversation(
 	ctx context.Context,
 	c *gin.Context,
@@ -109,7 +121,7 @@ func (a *Agent) runAnthropicConversation(
 			ToolChoice: anthropic.ToolChoiceUnionParam{
 				OfAuto: &anthropic.ToolChoiceAutoParam{},
 			},
-		})
+		}, a.anthropicSessionHeader()...)
 
 		_, messageContent, thinkingContent, streamedToolCalls, err := consumeAnthropicStreamingResponse(stream, sendEvent)
 		if err != nil {

@@ -629,6 +629,12 @@
         "providers": {
           "anthropic": "Anthropic 兼容",
           "openai": "OpenAI 兼容"
+        },
+        "reasoningEffort": "思考深度",
+        "reasoningEfforts": {
+          "high": "高",
+          "low": "低",
+          "max": "最高"
         }
       },
       "title": "AI Agent"

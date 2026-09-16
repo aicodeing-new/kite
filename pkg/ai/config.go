@@ -12,12 +12,13 @@ import (
 )
 
 type RuntimeConfig struct {
-	Enabled   bool
-	Provider  string
-	Model     string
-	APIKey    string
-	BaseURL   string
-	MaxTokens int
+	Enabled         bool
+	Provider        string
+	Model           string
+	APIKey          string
+	BaseURL         string
+	MaxTokens       int
+	ReasoningEffort string
 }
 
 func normalizeProvider(provider string) string {
@@ -48,12 +49,13 @@ func LoadRuntimeConfig() (*RuntimeConfig, error) {
 	}
 
 	cfg := &RuntimeConfig{
-		Enabled:   setting.AIAgentEnabled,
-		Provider:  normalizeProvider(setting.AIProvider),
-		Model:     strings.TrimSpace(setting.AIModel),
-		APIKey:    strings.TrimSpace(string(setting.AIAPIKey)),
-		BaseURL:   strings.TrimSpace(setting.AIBaseURL),
-		MaxTokens: setting.AIMaxTokens,
+		Enabled:         setting.AIAgentEnabled,
+		Provider:        normalizeProvider(setting.AIProvider),
+		Model:           strings.TrimSpace(setting.AIModel),
+		APIKey:          strings.TrimSpace(string(setting.AIAPIKey)),
+		BaseURL:         strings.TrimSpace(setting.AIBaseURL),
+		MaxTokens:       setting.AIMaxTokens,
+		ReasoningEffort: setting.AIReasoningEffort,
 	}
 	if cfg.Model == "" {
 		cfg.Model = defaultModelForProvider(cfg.Provider)

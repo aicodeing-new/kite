@@ -28,6 +28,8 @@ export type {
   PageContext,
 } from '@/components/ai-chat/ai-chat-types'
 
+const AI_SESSION_ID_HEADER = 'Kite-Session-Id'
+
 function generateId() {
   return `${Date.now()}-${Math.random().toString(36).slice(2, 9)}`
 }
@@ -480,6 +482,7 @@ export function useAIChat() {
       const headers: Record<string, string> = {
         'Content-Type': 'application/json',
         'Accept-Language': requestLanguage,
+        [AI_SESSION_ID_HEADER]: sessionId,
       }
       appendCurrentClusterHeader(headers)
 
@@ -661,6 +664,7 @@ export function useAIChat() {
 
         const headers: Record<string, string> = {
           'Content-Type': 'application/json',
+          [AI_SESSION_ID_HEADER]: opts.sessionId,
         }
         appendCurrentClusterHeader(headers)
         const response = await fetch(withSubPath(opts.url), {
@@ -835,7 +839,9 @@ export function useAIChat() {
     const oldSessionId = currentSessionIdRef.current
     clearMessages()
     if (oldSessionId) {
-      const headers: Record<string, string> = {}
+      const headers: Record<string, string> = {
+        [AI_SESSION_ID_HEADER]: oldSessionId,
+      }
       appendCurrentClusterHeader(headers)
       fetch(
         withSubPath(`/api/v1/ai/session/${encodeURIComponent(oldSessionId)}`),

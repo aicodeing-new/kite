@@ -16,6 +16,11 @@ import (
 	"k8s.io/klog/v2"
 )
 
+// AISessionIDHeader carries the conversation session id on outgoing LLM
+// requests so cache-aware gateways can pin one conversation to one prefill
+// instance and maximize prefix-cache hits.
+const AISessionIDHeader = "Kite-Session-Id"
+
 const systemPrompt = `You are Kite AI, an intelligent assistant for Kubernetes cluster management. You help users understand, monitor, and manage their Kubernetes clusters safely and accurately.
 
 You have access to tools that let you interact with the user's Kubernetes cluster. Use them to:
@@ -113,6 +118,8 @@ type Agent struct {
 	cs              *cluster.ClientSet
 	model           string
 	maxTokens       int
+	reasoningEffort string
+	sessionID       string
 }
 
 type runtimePromptContext struct {
@@ -141,11 +148,17 @@ func NewAgent(cs *cluster.ClientSet, cfg *RuntimeConfig) (*Agent, error) {
 		maxTokens = cfg.MaxTokens
 	}
 
+	reasoningEffort := ""
+	if cfg != nil && strings.TrimSpace(cfg.ReasoningEffort) != "" {
+		reasoningEffort = model.NormalizeGeneralAIReasoningEffort(cfg.ReasoningEffort)
+	}
+
 	agent := &Agent{
-		provider:  provider,
-		cs:        cs,
-		model:     modelName,
-		maxTokens: maxTokens,
+		provider:        provider,
+		cs:              cs,
+		model:           modelName,
+		maxTokens:       maxTokens,
+		reasoningEffort: reasoningEffort,
 	}
 
 	switch provider {
@@ -340,6 +353,7 @@ func (a *Agent) ContinuePendingAction(c *gin.Context, sessionID string, sendEven
 	if err != nil {
 		return err
 	}
+	a.sessionID = session.ConversationSessionID
 
 	switch session.Provider {
 	case model.GeneralAIProviderAnthropic:
@@ -357,6 +371,7 @@ func (a *Agent) ContinuePendingInput(c *gin.Context, sessionID string, values ma
 	if err != nil {
 		return err
 	}
+	a.sessionID = session.ConversationSessionID
 	if !InteractionTools[session.ToolCall.Name] {
 		return fmt.Errorf("pending input not found or expired")
 	}

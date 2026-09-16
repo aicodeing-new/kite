@@ -36,6 +36,7 @@ interface GeneralSettingsFormData {
   aiApiKeyConfigured: boolean
   aiBaseUrl: string
   aiMaxTokens: number
+  aiReasoningEffort: string
   kubectlEnabled: boolean
   kubectlImage: string
   nodeTerminalImage: string
@@ -54,6 +55,7 @@ export function GeneralManagement() {
     aiApiKeyConfigured: false,
     aiBaseUrl: '',
     aiMaxTokens: 4096,
+    aiReasoningEffort: 'low',
     kubectlEnabled: true,
     kubectlImage: DEFAULT_KUBECTL_IMAGE,
     nodeTerminalImage: DEFAULT_NODE_TERMINAL_IMAGE,
@@ -70,6 +72,7 @@ export function GeneralManagement() {
       aiApiKeyConfigured: data.aiApiKeyConfigured ?? false,
       aiBaseUrl: data.aiBaseUrl || '',
       aiMaxTokens: data.aiMaxTokens || 4096,
+      aiReasoningEffort: data.aiReasoningEffort || 'low',
       kubectlEnabled: data.kubectlEnabled ?? true,
       kubectlImage: data.kubectlImage || DEFAULT_KUBECTL_IMAGE,
       nodeTerminalImage: data.nodeTerminalImage || DEFAULT_NODE_TERMINAL_IMAGE,
@@ -145,6 +148,7 @@ export function GeneralManagement() {
       aiModel: formData.aiModel.trim() || defaultModel,
       aiBaseUrl: formData.aiBaseUrl.trim(),
       aiMaxTokens: formData.aiMaxTokens || 4096,
+      aiReasoningEffort: formData.aiReasoningEffort,
       kubectlEnabled: formData.kubectlEnabled,
       kubectlImage: formData.kubectlImage.trim() || DEFAULT_KUBECTL_IMAGE,
       nodeTerminalImage:
@@ -325,6 +329,50 @@ export function GeneralManagement() {
                   placeholder="4096"
                 />
               </div>
+
+              {formData.aiProvider === 'openai' && (
+                <div className="space-y-2">
+                  <Label htmlFor="general-ai-reasoning-effort">
+                    {t(
+                      'generalManagement.aiAgent.form.reasoningEffort',
+                      'Reasoning Effort'
+                    )}
+                  </Label>
+                  <Select
+                    value={formData.aiReasoningEffort}
+                    onValueChange={(value: string) =>
+                      setFormData((prev) => ({
+                        ...prev,
+                        aiReasoningEffort: value,
+                      }))
+                    }
+                  >
+                    <SelectTrigger id="general-ai-reasoning-effort">
+                      <SelectValue />
+                    </SelectTrigger>
+                    <SelectContent>
+                      <SelectItem value="low">
+                        {t(
+                          'generalManagement.aiAgent.form.reasoningEfforts.low',
+                          'Low'
+                        )}
+                      </SelectItem>
+                      <SelectItem value="high">
+                        {t(
+                          'generalManagement.aiAgent.form.reasoningEfforts.high',
+                          'High'
+                        )}
+                      </SelectItem>
+                      <SelectItem value="max">
+                        {t(
+                          'generalManagement.aiAgent.form.reasoningEfforts.max',
+                          'Max'
+                        )}
+                      </SelectItem>
+                    </SelectContent>
+                  </Select>
+                </div>
+              )}
             </div>
           )}
         </div>

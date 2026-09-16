@@ -9,6 +9,7 @@ import (
 
 	"github.com/gin-gonic/gin"
 	"github.com/openai/openai-go"
+	openaioption "github.com/openai/openai-go/option"
 	"k8s.io/klog/v2"
 )
 
@@ -80,6 +81,29 @@ func (a *Agent) continueChatOpenAIWithToolResult(c *gin.Context, session pending
 	return nil
 }
 
+// openAIReasoningEffort returns the reasoning_effort request parameter for
+// reasoning models (e.g. GLM-5.x). Empty omits the field, which keeps
+// non-reasoning endpoints that reject unknown parameters working.
+func (a *Agent) openAIReasoningEffort() openai.ReasoningEffort {
+	switch a.reasoningEffort {
+	case "low", "high", "max":
+		return openai.ReasoningEffort(a.reasoningEffort)
+	default:
+		return ""
+	}
+}
+
+// openAISessionHeader returns request options attaching the conversation
+// session id, for cache-aware LLM gateway routing.
+func (a *Agent) openAISessionHeader() []openaioption.RequestOption {
+	if a.sessionID == "" {
+		return nil
+	}
+	return []openaioption.RequestOption{
+		openaioption.WithHeader(AISessionIDHeader, a.sessionID),
+	}
+}
+
 func (a *Agent) runOpenAIConversation(
 	ctx context.Context,
 	c *gin.Context,
@@ -99,7 +123,7 @@ func (a *Agent) runOpenAIConversation(
 
 	maxIterations := 100
 	for i := 0; i < maxIterations; i++ {
-		stream := a.openaiClient.Chat.Completions.NewStreaming(ctx, openai.ChatCompletionNewParams{
+		params := openai.ChatCompletionNewParams{
 			Model:    a.model,
 			Messages: messages,
 			Tools:    tools,
@@ -107,7 +131,9 @@ func (a *Agent) runOpenAIConversation(
 				OfAuto: openai.String("auto"),
 			},
 			MaxCompletionTokens: openai.Int(int64(a.maxTokens)),
-		})
+			ReasoningEffort:     a.openAIReasoningEffort(),
+		}
+		stream := a.openaiClient.Chat.Completions.NewStreaming(ctx, params, a.openAISessionHeader()...)
 		messageContent, refusal, thinkingContent, streamedToolCalls, err := consumeStreamingResponse(stream, sendEvent)
 		if err != nil {
 			klog.Errorf("AI generation error: %v", err)

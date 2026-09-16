@@ -66,6 +66,8 @@ func HandleChat(c *gin.Context) {
 	c.Header("Connection", "keep-alive")
 	c.Header("X-Accel-Buffering", "no")
 
+	agent.sessionID = strings.TrimSpace(req.SessionID)
+
 	// Send SSE keepalive comments periodically to prevent proxy/load-balancer timeouts.
 	// This is the root cause of the "network error" when AI takes a long time to respond.
 	done := make(chan struct{})
@@ -231,6 +233,7 @@ func HandleGetGeneralSetting(c *gin.Context) {
 		"aiApiKeyConfigured":    hasAIAPIKey,
 		"aiBaseUrl":             setting.AIBaseURL,
 		"aiMaxTokens":           setting.AIMaxTokens,
+		"aiReasoningEffort":     setting.AIReasoningEffort,
 		"kubectlEnabled":        setting.KubectlEnabled,
 		"kubectlImage":          setting.KubectlImage,
 		"nodeTerminalImage":     setting.NodeTerminalImage,
@@ -246,6 +249,7 @@ type UpdateGeneralSettingRequest struct {
 	AIAPIKey              *string `json:"aiApiKey"`
 	AIBaseURL             string  `json:"aiBaseUrl"`
 	AIMaxTokens           int     `json:"aiMaxTokens"`
+	AIReasoningEffort     string  `json:"aiReasoningEffort"`
 	KubectlEnabled        bool    `json:"kubectlEnabled"`
 	KubectlImage          string  `json:"kubectlImage"`
 	NodeTerminalImage     string  `json:"nodeTerminalImage"`
@@ -278,6 +282,14 @@ func HandleUpdateGeneralSetting(c *gin.Context) {
 	aiModel := strings.TrimSpace(req.AIModel)
 	if aiModel == "" {
 		aiModel = model.DefaultGeneralAIModelByProvider(aiProvider)
+	}
+	aiReasoningEffort := strings.ToLower(strings.TrimSpace(req.AIReasoningEffort))
+	if aiReasoningEffort == "" {
+		aiReasoningEffort = currentSetting.AIReasoningEffort
+	}
+	if !model.IsGeneralAIReasoningEffortSupported(aiReasoningEffort) {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "Unsupported aiReasoningEffort"})
+		return
 	}
 	aiAPIKey := strings.TrimSpace(string(currentSetting.AIAPIKey))
 	shouldUpdateAIAPIKey := false
@@ -320,6 +332,7 @@ func HandleUpdateGeneralSetting(c *gin.Context) {
 		"ai_model":             aiModel,
 		"ai_base_url":          strings.TrimSpace(req.AIBaseURL),
 		"ai_max_tokens":        aiMaxTokens,
+		"ai_reasoning_effort":  aiReasoningEffort,
 		"kubectl_enabled":      req.KubectlEnabled,
 		"kubectl_image":        kubectlImage,
 		"node_terminal_image":  nodeTerminalImage,
@@ -347,6 +360,7 @@ func HandleUpdateGeneralSetting(c *gin.Context) {
 		"aiApiKeyConfigured":    hasAIAPIKey,
 		"aiBaseUrl":             updated.AIBaseURL,
 		"aiMaxTokens":           updated.AIMaxTokens,
+		"aiReasoningEffort":     updated.AIReasoningEffort,
 		"kubectlEnabled":        updated.KubectlEnabled,
 		"kubectlImage":          updated.KubectlImage,
 		"nodeTerminalImage":     updated.NodeTerminalImage,

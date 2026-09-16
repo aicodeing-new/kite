@@ -390,6 +390,7 @@ export interface GeneralSetting {
   aiApiKeyConfigured: boolean
   aiBaseUrl: string
   aiMaxTokens: number
+  aiReasoningEffort: string
   kubectlEnabled: boolean
   kubectlImage: string
   nodeTerminalImage: string
@@ -404,6 +405,7 @@ export interface GeneralSettingUpdateRequest {
   aiApiKey?: string
   aiBaseUrl?: string
   aiMaxTokens?: number
+  aiReasoningEffort?: string
   kubectlEnabled?: boolean
   kubectlImage?: string
   nodeTerminalImage?: string
