@@ -10,12 +10,16 @@ import { useCluster } from '@/hooks/use-cluster'
 
 import { ClusterProvider } from './cluster-context'
 
-const { refetchClusters } = vi.hoisted(() => ({
+const { refetchClusters, refetchUser, setDefaultCluster } = vi.hoisted(() => ({
   refetchClusters: vi.fn(),
+  refetchUser: vi.fn(),
+  setDefaultCluster: vi.fn(),
 }))
 
 vi.mock('@/lib/api', () => ({
   useCurrentClusterList: () => ({ refetch: refetchClusters }),
+  useCurrentUser: () => ({ refetch: refetchUser }),
+  setDefaultCluster,
 }))
 
 function ClusterState() {
@@ -35,6 +39,21 @@ function ClusterState() {
       </button>
       <div data-testid="switch-state">{isSwitching ? 'switching' : 'idle'}</div>
     </>
+  )
+}
+
+function renderProvider(initialEntry: string) {
+  const queryClient = new QueryClient({
+    defaultOptions: { queries: { retry: false } },
+  })
+  return render(
+    <QueryClientProvider client={queryClient}>
+      <MemoryRouter initialEntries={[initialEntry]}>
+        <ClusterProvider>
+          <ClusterState />
+        </ClusterProvider>
+      </MemoryRouter>
+    </QueryClientProvider>
   )
 }
 
@@ -66,21 +85,17 @@ describe('ClusterProvider default selection', () => {
       ],
       error: null,
     })
+    refetchUser.mockReset()
+    refetchUser.mockResolvedValue({
+      data: { user: { default_cluster: '' } },
+      error: null,
+    })
+    setDefaultCluster.mockReset()
+    setDefaultCluster.mockResolvedValue(undefined)
   })
 
   it('uses the default cluster when the URL has no cluster parameter', async () => {
-    const queryClient = new QueryClient({
-      defaultOptions: { queries: { retry: false } },
-    })
-    render(
-      <QueryClientProvider client={queryClient}>
-        <MemoryRouter initialEntries={['/pods']}>
-          <ClusterProvider>
-            <ClusterState />
-          </ClusterProvider>
-        </MemoryRouter>
-      </QueryClientProvider>
-    )
+    renderProvider('/pods')
 
     await waitFor(() => {
       expect(screen.getByText('mars2?cluster=mars2')).toBeInTheDocument()
@@ -88,20 +103,60 @@ describe('ClusterProvider default selection', () => {
     expect(sessionStorage.getItem('current-cluster')).toBe('mars2')
   })
 
+  it('prefers the user preference over the global default cluster', async () => {
+    refetchUser.mockResolvedValue({
+      data: { user: { default_cluster: 'mars1' } },
+      error: null,
+    })
+
+    renderProvider('/pods')
+
+    await waitFor(() => {
+      expect(screen.getByText('mars1?cluster=mars1')).toBeInTheDocument()
+    })
+  })
+
+  it('ignores a user preference that is not an available cluster', async () => {
+    refetchUser.mockResolvedValue({
+      data: { user: { default_cluster: 'jupiter' } },
+      error: null,
+    })
+
+    renderProvider('/pods')
+
+    await waitFor(() => {
+      expect(screen.getByText('mars2?cluster=mars2')).toBeInTheDocument()
+    })
+  })
+
+  it('lets the URL cluster parameter win over the user preference', async () => {
+    refetchUser.mockResolvedValue({
+      data: { user: { default_cluster: 'mars2' } },
+      error: null,
+    })
+
+    renderProvider('/pods?cluster=mars1')
+
+    await waitFor(() => {
+      expect(screen.getByText('mars1?cluster=mars1')).toBeInTheDocument()
+    })
+  })
+
+  it('persists the user preference when switching clusters', async () => {
+    const user = userEvent.setup()
+    renderProvider('/pods?cluster=mars1')
+
+    await waitFor(() => {
+      expect(screen.getByText('mars1?cluster=mars1')).toBeInTheDocument()
+    })
+    await user.click(screen.getByRole('button', { name: 'Switch to mars2' }))
+
+    expect(setDefaultCluster).toHaveBeenCalledWith('mars2')
+  })
+
   it('keeps a visible transition state while switching clusters', async () => {
     const user = userEvent.setup()
-    const queryClient = new QueryClient({
-      defaultOptions: { queries: { retry: false } },
-    })
-    render(
-      <QueryClientProvider client={queryClient}>
-        <MemoryRouter initialEntries={['/pods?cluster=mars1']}>
-          <ClusterProvider>
-            <ClusterState />
-          </ClusterProvider>
-        </MemoryRouter>
-      </QueryClientProvider>
-    )
+    renderProvider('/pods?cluster=mars1')
 
     await waitFor(() => {
       expect(screen.getByText('mars1?cluster=mars1')).toBeInTheDocument()

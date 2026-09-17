@@ -239,6 +239,30 @@ func UpdateSidebarPreference(c *gin.Context) {
 	c.JSON(http.StatusOK, gin.H{"success": true})
 }
 
+// UpdateDefaultCluster sets the authenticated user's personal default cluster.
+// An empty name clears the preference so the global default cluster applies.
+func UpdateDefaultCluster(c *gin.Context) {
+	user := c.MustGet("user").(model.User)
+	var req struct {
+		DefaultCluster string `json:"default_cluster"`
+	}
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+	req.DefaultCluster = strings.TrimSpace(req.DefaultCluster)
+	if len(req.DefaultCluster) > 100 {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "default cluster name is too long"})
+		return
+	}
+	if err := model.SetUserDefaultCluster(user.ID, req.DefaultCluster); err != nil {
+		klog.Errorf("failed to update default cluster for user %s: %v", user.Username, err)
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to update default cluster"})
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{"success": true})
+}
+
 func UpdateGlobalSidebarPreference(c *gin.Context) {
 	var req struct {
 		SidebarPreference string `json:"sidebar_preference" binding:"required"`

@@ -11,6 +11,7 @@ export interface AuthUser {
   provider: string
   roles?: { name: string }[]
   sidebar_preference?: string
+  default_cluster?: string
 }
 
 export interface CurrentUserResponse {
@@ -75,6 +76,14 @@ export const fetchCurrentUser = async (): Promise<CurrentUserResponse> => {
   return authApiClient.get<CurrentUserResponse>('/auth/user', {
     retryOnUnauthorized: false,
   })
+}
+
+export const setDefaultCluster = async (clusterName: string): Promise<void> => {
+  await authApiClient.post<void>(
+    '/users/default_cluster',
+    { default_cluster: clusterName },
+    { retryOnUnauthorized: false }
+  )
 }
 
 export const useCurrentUser = (options?: { enabled?: boolean }) => {

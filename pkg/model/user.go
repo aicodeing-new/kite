@@ -30,6 +30,9 @@ type User struct {
 	Groups []UserGroup   `json:"groups,omitempty" gorm:"many2many:user_group_members"`
 
 	SidebarPreference string `json:"sidebar_preference,omitempty" gorm:"size:16777215"`
+	// DefaultCluster is the user's personal default cluster preference.
+	// Empty means "follow the global default cluster".
+	DefaultCluster string `json:"default_cluster,omitempty" gorm:"type:varchar(100)"`
 }
 
 func (u *User) Key() string {
@@ -136,6 +139,7 @@ func FindWithSubOrUpsertUser(user *User) error {
 	user.ID = existingUser.ID
 	user.CreatedAt = existingUser.CreatedAt
 	user.SidebarPreference = existingUser.SidebarPreference
+	user.DefaultCluster = existingUser.DefaultCluster
 
 	// Log username changes for debugging
 	if existingUser.Username != user.Username {
@@ -382,6 +386,14 @@ func ResetPasswordByID(id uint, plainPassword string) error {
 	return err
 }
 
+// SetUserDefaultCluster stores a user's personal default cluster preference.
+// An empty cluster name clears the preference so the global default applies.
+func SetUserDefaultCluster(id uint, cluster string) error {
+	err := DB.Model(&User{}).Where("id = ?", id).Update("default_cluster", cluster).Error
+	InvalidateUserCache(uint64(id))
+	return err
+}
+
 // SetUserEnabled sets enabled flag for a user
 func SetUserEnabled(id uint, enabled bool) error {
 	err := DB.Model(&User{}).Where("id = ?", id).Update("enabled", enabled).Error
@@ -439,6 +451,7 @@ func UpsertLDAPUser(user *User) (*User, error) {
 	user.CreatedAt = existingUser.CreatedAt
 	user.Enabled = existingUser.Enabled
 	user.SidebarPreference = existingUser.SidebarPreference
+	user.DefaultCluster = existingUser.DefaultCluster
 	user.Sub = existingUser.Sub
 	if strings.TrimSpace(user.Name) == "" {
 		user.Name = existingUser.Name

@@ -59,6 +59,7 @@ func registerAuthRoutes(r *gin.RouterGroup, authHandler *auth.AuthHandler) {
 func registerUserRoutes(r *gin.RouterGroup, authHandler *auth.AuthHandler, cm *cluster.ClusterManager) {
 	userGroup := r.Group("/api/users")
 	userGroup.POST("/sidebar_preference", authHandler.RequireAuth(), handlers.UpdateSidebarPreference)
+	userGroup.POST("/default_cluster", authHandler.RequireAuth(), handlers.UpdateDefaultCluster)
 
 	// Feishu card-action callback — no auth (called by Feishu servers)
 	r.POST("/api/feishu/card-callback", handlers.HandleFeishuCardCallback)

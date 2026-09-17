@@ -11,7 +11,11 @@ import { useLocation, useNavigate } from 'react-router-dom'
 import { toast } from 'sonner'
 
 import { Cluster } from '@/types/api'
-import { useCurrentClusterList } from '@/lib/api'
+import {
+  setDefaultCluster,
+  useCurrentClusterList,
+  useCurrentUser,
+} from '@/lib/api'
 import {
   clearCurrentCluster,
   getCurrentCluster,
@@ -52,6 +56,8 @@ export const ClusterProvider: React.FC<{ children: React.ReactNode }> = ({
   const { refetch: refetchClusters } = useCurrentClusterList({
     enabled: false,
   })
+  const { refetch: refetchUser } = useCurrentUser({ enabled: false })
+  const userDefaultClusterRef = useRef('')
 
   const replaceUrlCluster = useCallback(
     (clusterName: string) => {
@@ -77,10 +83,16 @@ export const ClusterProvider: React.FC<{ children: React.ReactNode }> = ({
 
     const bootstrap = async () => {
       setIsLoading(true)
-      const result = await refetchClusters()
+      const [result, userResult] = await Promise.all([
+        refetchClusters(),
+        refetchUser(),
+      ])
       if (cancelled) {
         return
       }
+
+      userDefaultClusterRef.current =
+        userResult.data?.user?.default_cluster?.trim() ?? ''
 
       if (!result.data) {
         setClusters([])
@@ -103,12 +115,17 @@ export const ClusterProvider: React.FC<{ children: React.ReactNode }> = ({
         return
       }
 
+      // Selection order: URL param > user's saved preference > global
+      // default cluster > first available.
       const requestedCluster = initialUrlCluster.current
+      const userDefaultCluster = userDefaultClusterRef.current
       const defaultCluster = availableClusters.find(
         (cluster) => cluster.isDefault
       )
       const selectedCluster =
         availableClusters.find((cluster) => cluster.name === requestedCluster)
+          ?.name ??
+        availableClusters.find((cluster) => cluster.name === userDefaultCluster)
           ?.name ??
         defaultCluster?.name ??
         availableClusters[0].name
@@ -124,7 +141,7 @@ export const ClusterProvider: React.FC<{ children: React.ReactNode }> = ({
     return () => {
       cancelled = true
     }
-  }, [refetchClusters])
+  }, [refetchClusters, refetchUser])
 
   useEffect(() => {
     return () => {
@@ -156,6 +173,10 @@ export const ClusterProvider: React.FC<{ children: React.ReactNode }> = ({
       clusters.find(
         (cluster) => cluster.name === currentCluster && !cluster.error
       )?.name ??
+      clusters.find(
+        (cluster) =>
+          cluster.name === userDefaultClusterRef.current && !cluster.error
+      )?.name ??
       clusters.find((cluster) => cluster.isDefault && !cluster.error)?.name ??
       clusters.find((cluster) => !cluster.error)?.name
     if (!fallbackCluster) {
@@ -181,6 +202,13 @@ export const ClusterProvider: React.FC<{ children: React.ReactNode }> = ({
     setIsSwitching(true)
     void queryClient.cancelQueries({
       predicate: (query) => query.queryKey[0] === 'cluster',
+    })
+    // Remember the last explicitly chosen cluster as this user's default;
+    // failure is non-fatal — the next session just falls back to the global
+    // default cluster.
+    userDefaultClusterRef.current = clusterName
+    setDefaultCluster(clusterName).catch((error) => {
+      console.warn('Failed to persist default cluster preference:', error)
     })
     persistCurrentCluster(clusterName)
     setCurrentClusterState(clusterName)
