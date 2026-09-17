@@ -26,6 +26,8 @@ interface ClusterContextType {
   clusters: Cluster[]
   currentCluster: string | null
   setCurrentCluster: (clusterName: string) => void
+  userDefaultCluster: string
+  toggleUserDefaultCluster: (clusterName: string) => void
   isLoading: boolean
   isSwitching?: boolean
   error: Error | null
@@ -45,6 +47,7 @@ export const ClusterProvider: React.FC<{ children: React.ReactNode }> = ({
   const [isLoading, setIsLoading] = useState(true)
   const [error, setError] = useState<Error | null>(null)
   const [isSwitching, setIsSwitching] = useState(false)
+  const [userDefaultCluster, setUserDefaultCluster] = useState('')
   const queryClient = useQueryClient()
   const location = useLocation()
   const navigate = useNavigate()
@@ -93,6 +96,7 @@ export const ClusterProvider: React.FC<{ children: React.ReactNode }> = ({
 
       userDefaultClusterRef.current =
         userResult.data?.user?.default_cluster?.trim() ?? ''
+      setUserDefaultCluster(userDefaultClusterRef.current)
 
       if (!result.data) {
         setClusters([])
@@ -203,13 +207,6 @@ export const ClusterProvider: React.FC<{ children: React.ReactNode }> = ({
     void queryClient.cancelQueries({
       predicate: (query) => query.queryKey[0] === 'cluster',
     })
-    // Remember the last explicitly chosen cluster as this user's default;
-    // failure is non-fatal — the next session just falls back to the global
-    // default cluster.
-    userDefaultClusterRef.current = clusterName
-    setDefaultCluster(clusterName).catch((error) => {
-      console.warn('Failed to persist default cluster preference:', error)
-    })
     persistCurrentCluster(clusterName)
     setCurrentClusterState(clusterName)
     replaceUrlCluster(clusterName)
@@ -247,10 +244,28 @@ export const ClusterProvider: React.FC<{ children: React.ReactNode }> = ({
     }, 80)
   }
 
+  // Pins or unpins a cluster as this user's default. Unpinning clears the
+  // preference so the global default cluster applies again. Switching
+  // clusters never touches the preference — only this explicit action does.
+  const toggleUserDefaultCluster = (clusterName: string) => {
+    const next = userDefaultCluster === clusterName ? '' : clusterName
+    const previous = userDefaultCluster
+    userDefaultClusterRef.current = next
+    setUserDefaultCluster(next)
+    setDefaultCluster(next).catch((error) => {
+      console.warn('Failed to persist default cluster preference:', error)
+      userDefaultClusterRef.current = previous
+      setUserDefaultCluster(previous)
+      toast.error('Failed to update default cluster')
+    })
+  }
+
   const value: ClusterContextType = {
     clusters,
     currentCluster,
     setCurrentCluster,
+    userDefaultCluster,
+    toggleUserDefaultCluster,
     isLoading,
     isSwitching,
     error,

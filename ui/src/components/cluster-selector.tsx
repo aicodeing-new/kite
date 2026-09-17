@@ -2,6 +2,8 @@ import {
   IconCheck,
   IconChevronDown,
   IconExternalLink,
+  IconPin,
+  IconPinFilled,
   IconServer,
 } from '@tabler/icons-react'
 
@@ -22,6 +24,8 @@ export function ClusterSelector() {
     clusters,
     currentCluster,
     setCurrentCluster,
+    userDefaultCluster,
+    toggleUserDefaultCluster,
     isSwitching,
     isLoading,
   } = useCluster()
@@ -95,6 +99,32 @@ export function ClusterSelector() {
                 <IconCheck className="h-4 w-4 shrink-0" />
               )}
             </DropdownMenuItem>
+            {!cluster.error && (
+              <DropdownMenuItem
+                onSelect={(event) => {
+                  // Keep the menu open so the pin state change is visible.
+                  event.preventDefault()
+                  toggleUserDefaultCluster(cluster.name)
+                }}
+                className="w-9 shrink-0 justify-center px-0"
+                aria-label={
+                  userDefaultCluster === cluster.name
+                    ? `Clear ${cluster.name} as my default cluster`
+                    : `Set ${cluster.name} as my default cluster`
+                }
+                title={
+                  userDefaultCluster === cluster.name
+                    ? 'My default cluster (click to clear)'
+                    : 'Set as my default cluster'
+                }
+              >
+                {userDefaultCluster === cluster.name ? (
+                  <IconPinFilled className="h-4 w-4" />
+                ) : (
+                  <IconPin className="h-4 w-4 opacity-50" />
+                )}
+              </DropdownMenuItem>
+            )}
             {!cluster.error && (
               <DropdownMenuItem asChild>
                 <a

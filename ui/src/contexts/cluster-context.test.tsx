@@ -23,8 +23,14 @@ vi.mock('@/lib/api', () => ({
 }))
 
 function ClusterState() {
-  const { currentCluster, isLoading, isSwitching, setCurrentCluster } =
-    useCluster()
+  const {
+    currentCluster,
+    isLoading,
+    isSwitching,
+    setCurrentCluster,
+    userDefaultCluster,
+    toggleUserDefaultCluster,
+  } = useCluster()
   const location = useLocation()
 
   return (
@@ -37,6 +43,10 @@ function ClusterState() {
       <button type="button" onClick={() => setCurrentCluster('mars2')}>
         Switch to mars2
       </button>
+      <button type="button" onClick={() => toggleUserDefaultCluster('mars1')}>
+        Pin mars1
+      </button>
+      <div data-testid="user-default">{userDefaultCluster || 'none'}</div>
       <div data-testid="switch-state">{isSwitching ? 'switching' : 'idle'}</div>
     </>
   )
@@ -142,7 +152,7 @@ describe('ClusterProvider default selection', () => {
     })
   })
 
-  it('persists the user preference when switching clusters', async () => {
+  it('does not change the preference when switching clusters', async () => {
     const user = userEvent.setup()
     renderProvider('/pods?cluster=mars1')
 
@@ -151,7 +161,44 @@ describe('ClusterProvider default selection', () => {
     })
     await user.click(screen.getByRole('button', { name: 'Switch to mars2' }))
 
-    expect(setDefaultCluster).toHaveBeenCalledWith('mars2')
+    expect(screen.getByText('mars2?cluster=mars2')).toBeInTheDocument()
+    expect(setDefaultCluster).not.toHaveBeenCalled()
+  })
+
+  it('pins and unpins the default cluster via the explicit action', async () => {
+    const user = userEvent.setup()
+    renderProvider('/pods')
+
+    await waitFor(() => {
+      expect(screen.getByText('mars2?cluster=mars2')).toBeInTheDocument()
+    })
+    expect(screen.getByTestId('user-default')).toHaveTextContent('none')
+
+    await user.click(screen.getByRole('button', { name: 'Pin mars1' }))
+    expect(setDefaultCluster).toHaveBeenCalledWith('mars1')
+    expect(screen.getByTestId('user-default')).toHaveTextContent('mars1')
+
+    await user.click(screen.getByRole('button', { name: 'Pin mars1' }))
+    expect(setDefaultCluster).toHaveBeenCalledWith('')
+    expect(screen.getByTestId('user-default')).toHaveTextContent('none')
+  })
+
+  it('reverts the pin when persisting fails', async () => {
+    setDefaultCluster.mockRejectedValueOnce(new Error('boom'))
+    const user = userEvent.setup()
+    renderProvider('/pods')
+
+    await waitFor(() => {
+      expect(screen.getByText('mars2?cluster=mars2')).toBeInTheDocument()
+    })
+    await user.click(screen.getByRole('button', { name: 'Pin mars1' }))
+
+    // The optimistic pin is applied and then rolled back after the failed
+    // write, leaving the user on "follow the global default".
+    expect(setDefaultCluster).toHaveBeenCalledWith('mars1')
+    await waitFor(() => {
+      expect(screen.getByTestId('user-default')).toHaveTextContent('none')
+    })
   })
 
   it('keeps a visible transition state while switching clusters', async () => {
