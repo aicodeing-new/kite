@@ -1,9 +1,15 @@
 // @vitest-environment jsdom
 
+import { useEffect } from 'react'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { render, screen, waitFor } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
-import { MemoryRouter, useLocation } from 'react-router-dom'
+import {
+  createBrowserRouter,
+  MemoryRouter,
+  RouterProvider,
+  useLocation,
+} from 'react-router-dom'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 
 import { useCluster } from '@/hooks/use-cluster'
@@ -22,7 +28,11 @@ vi.mock('@/lib/api', () => ({
   setDefaultCluster,
 }))
 
-function ClusterState() {
+function ClusterState({
+  onSelection,
+}: {
+  onSelection?: (cluster: string | null, search: string) => void
+}) {
   const {
     currentCluster,
     isLoading,
@@ -32,6 +42,10 @@ function ClusterState() {
     toggleUserDefaultCluster,
   } = useCluster()
   const location = useLocation()
+
+  useEffect(() => {
+    onSelection?.(currentCluster, location.search)
+  }, [currentCluster, location.search, onSelection])
 
   return (
     <>
@@ -69,6 +83,7 @@ function renderProvider(initialEntry: string) {
 
 describe('ClusterProvider default selection', () => {
   beforeEach(() => {
+    window.history.replaceState({}, '', '/')
     sessionStorage.clear()
     sessionStorage.setItem('current-cluster', 'mars1')
     refetchClusters.mockReset()
@@ -163,6 +178,56 @@ describe('ClusterProvider default selection', () => {
 
     expect(screen.getByText('mars2?cluster=mars2')).toBeInTheDocument()
     expect(setDefaultCluster).not.toHaveBeenCalled()
+  })
+
+  it('keeps the selected cluster after a browser router transition completes', async () => {
+    window.history.replaceState({}, '', '/pods?cluster=mars1&namespace=dev#top')
+    const queryClient = new QueryClient({
+      defaultOptions: { queries: { retry: false } },
+    })
+    const onSelection = vi.fn()
+    const router = createBrowserRouter([
+      {
+        path: '/pods',
+        element: (
+          <ClusterProvider>
+            <ClusterState onSelection={onSelection} />
+          </ClusterProvider>
+        ),
+      },
+    ])
+    const view = render(
+      <QueryClientProvider client={queryClient}>
+        <RouterProvider router={router} />
+      </QueryClientProvider>
+    )
+    const user = userEvent.setup()
+
+    try {
+      await screen.findByText('mars1?cluster=mars1&namespace=dev')
+      onSelection.mockClear()
+      await user.click(screen.getByRole('button', { name: 'Switch to mars2' }))
+      await waitFor(() => {
+        expect(screen.getByTestId('switch-state')).toHaveTextContent('idle')
+      })
+
+      expect(
+        screen.getByText('mars2?cluster=mars2&namespace=dev')
+      ).toBeInTheDocument()
+      expect(sessionStorage.getItem('current-cluster')).toBe('mars2')
+      expect(window.location.search).toBe('?cluster=mars2&namespace=dev')
+      expect(window.location.hash).toBe('#top')
+      // A new cluster must never mount against the previous browser URL:
+      // API headers and query keys read their cluster from that URL.
+      expect(onSelection).not.toHaveBeenCalledWith(
+        'mars2',
+        '?cluster=mars1&namespace=dev'
+      )
+    } finally {
+      view.unmount()
+      router.dispose()
+      queryClient.clear()
+    }
   })
 
   it('pins and unpins the default cluster via the explicit action', async () => {

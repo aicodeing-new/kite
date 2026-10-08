@@ -53,6 +53,7 @@ export const ClusterProvider: React.FC<{ children: React.ReactNode }> = ({
   const navigate = useNavigate()
   const switchTimerRef = useRef<number | null>(null)
   const switchSequenceRef = useRef(0)
+  const committedClusterRef = useRef(currentCluster)
   const initialUrlCluster = useRef(
     new URLSearchParams(location.search).get('cluster')
   )
@@ -61,6 +62,10 @@ export const ClusterProvider: React.FC<{ children: React.ReactNode }> = ({
   })
   const { refetch: refetchUser } = useCurrentUser({ enabled: false })
   const userDefaultClusterRef = useRef('')
+
+  useEffect(() => {
+    committedClusterRef.current = currentCluster
+  }, [currentCluster])
 
   const replaceUrlCluster = useCallback(
     (clusterName: string) => {
@@ -207,8 +212,9 @@ export const ClusterProvider: React.FC<{ children: React.ReactNode }> = ({
     void queryClient.cancelQueries({
       predicate: (query) => query.queryKey[0] === 'cluster',
     })
-    persistCurrentCluster(clusterName)
-    setCurrentClusterState(clusterName)
+    // Let URL synchronization apply the selection after navigation commits.
+    // Updating state first mounts the new cluster against the old URL, which
+    // can send requests to the old cluster and then roll back the selection.
     replaceUrlCluster(clusterName)
     toast.loading(`Switching to cluster: ${clusterName}`, {
       id: 'cluster-switch',
@@ -222,12 +228,15 @@ export const ClusterProvider: React.FC<{ children: React.ReactNode }> = ({
     }
     switchTimerRef.current = window.setInterval(() => {
       const elapsed = Date.now() - startedAt
+      const selectionCommitted = committedClusterRef.current === clusterName
       const pendingQueries = queryClient.isFetching({
         predicate: (query) =>
           query.queryKey[0] === 'cluster' && query.queryKey[1] === clusterName,
       })
       if (
-        (elapsed >= minimumDuration && pendingQueries === 0) ||
+        (selectionCommitted &&
+          elapsed >= minimumDuration &&
+          pendingQueries === 0) ||
         elapsed >= maximumDuration
       ) {
         if (switchTimerRef.current !== null) {
@@ -236,9 +245,15 @@ export const ClusterProvider: React.FC<{ children: React.ReactNode }> = ({
         }
         if (switchSequenceRef.current === switchSequence) {
           setIsSwitching(false)
-          toast.success(`Switched to cluster: ${clusterName}`, {
-            id: 'cluster-switch',
-          })
+          if (selectionCommitted) {
+            toast.success(`Switched to cluster: ${clusterName}`, {
+              id: 'cluster-switch',
+            })
+          } else {
+            toast.error(`Failed to switch to cluster: ${clusterName}`, {
+              id: 'cluster-switch',
+            })
+          }
         }
       }
     }, 80)
