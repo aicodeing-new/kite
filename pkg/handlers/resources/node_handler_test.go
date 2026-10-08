@@ -1,24 +1,33 @@
 package resources
 
 import (
+	"context"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"testing"
+	"time"
 
 	"github.com/gin-gonic/gin"
+	"github.com/glebarez/sqlite"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"github.com/zxh326/kite/pkg/cluster"
 	"github.com/zxh326/kite/pkg/common"
 	"github.com/zxh326/kite/pkg/kube"
+	"github.com/zxh326/kite/pkg/model"
+	"gorm.io/gorm"
 	corev1 "k8s.io/api/core/v1"
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
+	"k8s.io/apimachinery/pkg/types"
 	metricsv1 "k8s.io/metrics/pkg/apis/metrics/v1beta1"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
+	"sigs.k8s.io/controller-runtime/pkg/client/interceptor"
 )
 
 // buildTestScheme creates a runtime.Scheme with all types the handler needs.
@@ -508,4 +517,189 @@ func TestNodeHandlerList_Uncached_MultipleContainersPerPod(t *testing.T) {
 	assert.Equal(t, int64(1), m.Pods)
 	assert.Equal(t, int64(500), m.CPURequest, "200+300=500m (uncached)")
 	assert.Equal(t, int64((128+256)*1024*1024), m.MemoryRequest, "128+256=384Mi (uncached)")
+}
+
+// ---------- RestoreNodeScheduling tests ----------
+
+// setupNodeAuditDB swaps model.DB for an in-memory sqlite database so
+// recordNodeAudit calls inside node operations can persist.
+func setupNodeAuditDB(t *testing.T) {
+	t.Helper()
+	testDB, err := gorm.Open(sqlite.Open(fmt.Sprintf("file:node-audit-%d?mode=memory&cache=shared", time.Now().UnixNano())))
+	if err != nil {
+		t.Fatalf("open test database: %v", err)
+	}
+	if err := testDB.AutoMigrate(&model.User{}, &model.ResourceHistory{}); err != nil {
+		t.Fatalf("migrate test database: %v", err)
+	}
+	originalDB := model.DB
+	model.DB = testDB
+	t.Cleanup(func() {
+		model.DB = originalDB
+		if sqlDB, dbErr := testDB.DB(); dbErr == nil {
+			_ = sqlDB.Close()
+		}
+	})
+}
+
+// newNodeOpContext builds a gin context with the cluster, user, and :name
+// route param set the same way the production middleware and router do.
+func newNodeOpContext(t *testing.T, cs *cluster.ClientSet, nodeName string) (*gin.Context, *httptest.ResponseRecorder) {
+	t.Helper()
+	ctx, rec := newTestGinContext(t, cs)
+	ctx.Request = httptest.NewRequest(http.MethodPost, "/api/v1/nodes/_all/"+nodeName+"/restore", nil)
+	ctx.Params = gin.Params{{Key: "name", Value: nodeName}}
+	ctx.Set("user", model.User{})
+	return ctx, rec
+}
+
+func decodeRestoreResponse(t *testing.T, rec *httptest.ResponseRecorder) (removedTaints int, uncordoned bool) {
+	t.Helper()
+	require.Equal(t, http.StatusOK, rec.Code, "unexpected status code; body=%s", rec.Body.String())
+	var response struct {
+		RemovedTaints int  `json:"removedTaints"`
+		Uncordoned    bool `json:"uncordoned"`
+	}
+	require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &response))
+	return response.RemovedTaints, response.Uncordoned
+}
+
+// TestNodeHandlerRestoreNodeScheduling verifies a cordoned node with taints is
+// cleared in a single patch and the operation is audited.
+func TestNodeHandlerRestoreNodeScheduling(t *testing.T) {
+	setupNodeAuditDB(t)
+
+	node := makeNode("worker-1", 4000, 8*1024*1024*1024, 110)
+	node.Spec.Unschedulable = true
+	node.Spec.Taints = []corev1.Taint{
+		{Key: "example.com/workload", Value: "maintenance", Effect: corev1.TaintEffectNoSchedule},
+		{Key: "example.com/gpu", Effect: corev1.TaintEffectNoExecute},
+	}
+	cs := newFakeClientSet(t, node)
+
+	ctx, rec := newNodeOpContext(t, cs, "worker-1")
+	NewNodeHandler().RestoreNodeScheduling(ctx)
+
+	removedTaints, uncordoned := decodeRestoreResponse(t, rec)
+	assert.Equal(t, 2, removedTaints)
+	assert.True(t, uncordoned)
+
+	var updated corev1.Node
+	require.NoError(t, cs.K8sClient.Get(context.Background(), types.NamespacedName{Name: "worker-1"}, &updated))
+	assert.Empty(t, updated.Spec.Taints)
+	assert.False(t, updated.Spec.Unschedulable)
+
+	var history model.ResourceHistory
+	require.NoError(t, model.DB.Where("resource_name = ? AND operation_type = ?", "worker-1", "restore").First(&history).Error)
+	assert.True(t, history.Success)
+}
+
+// TestNodeHandlerRestoreNodeScheduling_Noop verifies a clean, schedulable node
+// still returns success with zero counts.
+func TestNodeHandlerRestoreNodeScheduling_Noop(t *testing.T) {
+	setupNodeAuditDB(t)
+
+	cs := newFakeClientSet(t, makeNode("worker-2", 4000, 8*1024*1024*1024, 110))
+
+	ctx, rec := newNodeOpContext(t, cs, "worker-2")
+	NewNodeHandler().RestoreNodeScheduling(ctx)
+
+	removedTaints, uncordoned := decodeRestoreResponse(t, rec)
+	assert.Equal(t, 0, removedTaints)
+	assert.False(t, uncordoned)
+}
+
+// TestNodeHandlerRestoreNodeScheduling_NotFound verifies the missing-node path.
+func TestNodeHandlerRestoreNodeScheduling_NotFound(t *testing.T) {
+	setupNodeAuditDB(t)
+
+	cs := newFakeClientSet(t)
+
+	ctx, rec := newNodeOpContext(t, cs, "ghost")
+	NewNodeHandler().RestoreNodeScheduling(ctx)
+
+	require.Equal(t, http.StatusNotFound, rec.Code, "unexpected status code; body=%s", rec.Body.String())
+}
+
+// A stale read must not cause a version conflict or omit the fields to clear.
+func TestNodeHandlerRestoreNodeScheduling_ConcurrentUpdate(t *testing.T) {
+	for _, cachedClean := range []bool{false, true} {
+		t.Run(fmt.Sprintf("cachedClean=%t", cachedClean), func(t *testing.T) {
+			setupNodeAuditDB(t)
+			node := makeNode("worker-1", 4000, 8*1024*1024*1024, 110)
+			if !cachedClean {
+				node.Spec.Unschedulable = true
+				node.Spec.Taints = []corev1.Taint{{Key: "old", Effect: corev1.TaintEffectNoSchedule}}
+			}
+			backing := fake.NewClientBuilder().WithScheme(buildTestScheme(t)).WithObjects(node).Build()
+			var readVersion string
+			patchCalls := 0
+			wrapped := interceptor.NewClient(backing, interceptor.Funcs{
+				Get: func(ctx context.Context, c client.WithWatch, key client.ObjectKey, obj client.Object, opts ...client.GetOption) error {
+					if err := c.Get(ctx, key, obj, opts...); err != nil {
+						return err
+					}
+					readVersion = obj.GetResourceVersion()
+					// Leave the handler's snapshot stale while advancing the live node.
+					live := obj.(*corev1.Node).DeepCopy()
+					live.Labels = map[string]string{"concurrent-update": "preserve"}
+					live.Spec.ProviderID = "provider://concurrent-update"
+					live.Spec.Unschedulable = true
+					live.Spec.Taints = []corev1.Taint{
+						{Key: "new", Effect: corev1.TaintEffectNoSchedule},
+						{Key: "evict", Effect: corev1.TaintEffectNoExecute},
+						{Key: "prefer", Effect: corev1.TaintEffectPreferNoSchedule},
+					}
+					return c.Update(ctx, live)
+				},
+				Patch: func(ctx context.Context, c client.WithWatch, obj client.Object, patch client.Patch, opts ...client.PatchOption) error {
+					patchCalls++
+					assert.Equal(t, types.MergePatchType, patch.Type())
+					data, err := patch.Data(obj)
+					require.NoError(t, err)
+					assert.JSONEq(t, `{"spec":{"taints":null,"unschedulable":false}}`, string(data))
+					return c.Patch(ctx, obj, patch, opts...)
+				},
+			})
+			cs := &cluster.ClientSet{K8sClient: &kube.K8sClient{Client: wrapped, CacheEnabled: true}}
+			ctx, rec := newNodeOpContext(t, cs, node.Name)
+			NewNodeHandler().RestoreNodeScheduling(ctx)
+			require.Equal(t, http.StatusOK, rec.Code, rec.Body.String())
+			assert.Equal(t, 1, patchCalls)
+
+			var updated corev1.Node
+			require.NoError(t, backing.Get(context.Background(), client.ObjectKey{Name: node.Name}, &updated))
+			assert.NotEqual(t, readVersion, updated.ResourceVersion)
+			assert.Empty(t, updated.Spec.Taints)
+			assert.False(t, updated.Spec.Unschedulable)
+			assert.Equal(t, "preserve", updated.Labels["concurrent-update"])
+			assert.Equal(t, "provider://concurrent-update", updated.Spec.ProviderID)
+		})
+	}
+}
+
+func TestNodeHandlerRestoreNodeScheduling_PatchFailure(t *testing.T) {
+	setupNodeAuditDB(t)
+	node := makeNode("worker-1", 4000, 8*1024*1024*1024, 110)
+	node.Spec.Unschedulable = true
+	node.Spec.Taints = []corev1.Taint{{Key: "maintenance", Effect: corev1.TaintEffectNoSchedule}}
+	backing := fake.NewClientBuilder().WithScheme(buildTestScheme(t)).WithObjects(node).Build()
+	wrapped := interceptor.NewClient(backing, interceptor.Funcs{
+		Patch: func(ctx context.Context, c client.WithWatch, obj client.Object, patch client.Patch, opts ...client.PatchOption) error {
+			return apierrors.NewForbidden(corev1.Resource("nodes"), obj.GetName(), fmt.Errorf("patch denied"))
+		},
+	})
+	cs := &cluster.ClientSet{K8sClient: &kube.K8sClient{Client: wrapped}}
+	ctx, rec := newNodeOpContext(t, cs, node.Name)
+	NewNodeHandler().RestoreNodeScheduling(ctx)
+	require.Equal(t, http.StatusInternalServerError, rec.Code)
+	assert.Contains(t, rec.Body.String(), "patch denied")
+	var unchanged corev1.Node
+	require.NoError(t, backing.Get(context.Background(), client.ObjectKey{Name: node.Name}, &unchanged))
+	assert.True(t, unchanged.Spec.Unschedulable)
+	assert.Equal(t, node.Spec.Taints, unchanged.Spec.Taints)
+	var history model.ResourceHistory
+	require.NoError(t, model.DB.Where("resource_name = ? AND operation_type = ?", node.Name, "restore").First(&history).Error)
+	assert.False(t, history.Success)
+	assert.Contains(t, history.ErrorMessage, "patch denied")
 }

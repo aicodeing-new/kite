@@ -226,6 +226,45 @@ func (h *NodeHandler) UncordonNode(c *gin.Context) {
 	})
 }
 
+// RestoreNodeScheduling makes a node schedulable again in a single patch:
+// it removes every taint and clears spec.unschedulable.
+func (h *NodeHandler) RestoreNodeScheduling(c *gin.Context) {
+	nodeName := c.Param("name")
+	ctx := c.Request.Context()
+	cs := c.MustGet("cluster").(*cluster.ClientSet)
+
+	var node corev1.Node
+	if err := cs.K8sClient.Get(ctx, types.NamespacedName{Name: nodeName}, &node); err != nil {
+		h.recordNodeAudit(c, nodeName, "restore", false, err.Error())
+		if errors.IsNotFound(err) {
+			c.JSON(http.StatusNotFound, gin.H{"error": "Node not found"})
+			return
+		}
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+
+	removedTaints := len(node.Spec.Taints)
+	wasUnschedulable := node.Spec.Unschedulable
+	// Explicitly send both fields even when the cached node already looks clean.
+	// Avoid a resourceVersion precondition so unrelated concurrent node updates
+	// do not cause conflicts, and leave every other field untouched.
+	patch := client.RawPatch(types.MergePatchType, []byte(`{"spec":{"taints":null,"unschedulable":false}}`))
+	if err := cs.K8sClient.Patch(ctx, &node, patch); err != nil {
+		h.recordNodeAudit(c, nodeName, "restore", false, err.Error())
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to restore node scheduling: " + err.Error()})
+		return
+	}
+
+	h.recordNodeAudit(c, nodeName, "restore", true, "")
+	c.JSON(http.StatusOK, gin.H{
+		"message":       fmt.Sprintf("Node %s restored for scheduling: %d taint(s) removed", node.Name, removedTaints),
+		"node":          node.Name,
+		"removedTaints": removedTaints,
+		"uncordoned":    wasUnschedulable,
+	})
+}
+
 // TaintNode adds or updates taints on a node
 func (h *NodeHandler) TaintNode(c *gin.Context) {
 	nodeName := c.Param("name")
@@ -432,6 +471,7 @@ func (h *NodeHandler) registerCustomRoutes(group *gin.RouterGroup) {
 	group.POST("/_all/:name/uncordon", h.UncordonNode)
 	group.POST("/_all/:name/taint", h.TaintNode)
 	group.POST("/_all/:name/untaint", h.UntaintNode)
+	group.POST("/_all/:name/restore", h.RestoreNodeScheduling)
 }
 
 type diskStat struct {

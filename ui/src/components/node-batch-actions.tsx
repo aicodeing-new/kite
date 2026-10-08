@@ -13,6 +13,7 @@ import { NodeWithMetrics } from '@/types/api'
 import {
   cordonNode,
   drainNode,
+  restoreNodeScheduling,
   taintNode,
   uncordonNode,
   untaintNode,
@@ -48,7 +49,13 @@ import {
   SelectValue,
 } from '@/components/ui/select'
 
-type NodeOperation = 'cordon' | 'uncordon' | 'drain' | 'taint' | 'untaint'
+type NodeOperation =
+  | 'cordon'
+  | 'uncordon'
+  | 'drain'
+  | 'taint'
+  | 'untaint'
+  | 'restore'
 type ResultStatus = 'pending' | 'running' | 'success' | 'failed' | 'skipped'
 
 interface OperationResult {
@@ -69,6 +76,7 @@ const operationLabels: Record<NodeOperation, string> = {
   drain: 'Drain',
   taint: 'Add / Update Taint',
   untaint: 'Remove Taint',
+  restore: 'Restore Scheduling',
 }
 
 async function runWithConcurrency<T>(
@@ -251,6 +259,19 @@ export function NodeBatchActions({
         if (operation === 'untaint') {
           await untaintNode(nodeName, untaintKey.trim())
         }
+        if (operation === 'restore') {
+          const result = await restoreNodeScheduling(nodeName)
+          const summary = [
+            result.removedTaints > 0
+              ? `${result.removedTaints} taint${result.removedTaints === 1 ? '' : 's'} removed`
+              : null,
+            result.uncordoned ? 'uncordoned' : null,
+          ]
+            .filter(Boolean)
+            .join(', ')
+          updateResult(nodeName, 'success', summary || 'already schedulable')
+          return
+        }
         updateResult(nodeName, 'success')
       } catch (error) {
         failedCount += 1
@@ -307,6 +328,10 @@ export function NodeBatchActions({
           <DropdownMenuItem onSelect={() => openOperation('untaint')}>
             Remove Taint
           </DropdownMenuItem>
+          <DropdownMenuSeparator />
+          <DropdownMenuItem onSelect={() => openOperation('restore')}>
+            Restore Scheduling
+          </DropdownMenuItem>
         </DropdownMenuContent>
       </DropdownMenu>
 
@@ -319,6 +344,8 @@ export function NodeBatchActions({
               selected node{validNodes.length === 1 ? '' : 's'}.
               {eligibleNodeCount < validNodes.length &&
                 ` ${validNodes.length - eligibleNodeCount} already in the requested state will be skipped.`}
+              {operation === 'restore' &&
+                ' This removes all taints and marks the nodes as schedulable so pods can be assigned to them.'}
             </DialogDescription>
           </DialogHeader>
 

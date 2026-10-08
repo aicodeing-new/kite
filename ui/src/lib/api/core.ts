@@ -255,6 +255,25 @@ export const untaintNode = async (
   return response
 }
 
+export const restoreNodeScheduling = async (
+  nodeName: string
+): Promise<{
+  message: string
+  node: string
+  removedTaints: number
+  uncordoned: boolean
+}> => {
+  const endpoint = `/nodes/_all/${nodeName}/restore`
+  const response = await apiClient.post<{
+    message: string
+    node: string
+    removedTaints: number
+    uncordoned: boolean
+  }>(endpoint)
+
+  return response
+}
+
 export const updateResource = async <T extends ResourceType>(
   resource: T,
   name: string,
