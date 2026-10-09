@@ -1,0 +1,33 @@
+-- Replace all placeholders. Percent-encode special characters in URI credentials.
+-- Source MySQL database name is assumed to be "kite".
+-- Use a fresh, dedicated target database. Do not run Kite against it before loading.
+LOAD DATABASE
+     FROM mysql://MYSQL_USER:MYSQL_PASSWORD@MYSQL_HOST:3306/kite
+     INTO postgresql://PG_USER:PG_PASSWORD@PG_HOST:5432/kite_pg?sslmode=require
+
+ WITH include no drop,
+      create tables,
+      create indexes,
+      reset sequences,
+      foreign keys
+
+ SET PostgreSQL PARAMETERS
+     timezone to 'Asia/Shanghai'
+
+ SET MySQL PARAMETERS
+     time_zone = '+08:00'
+
+ CAST type bigint with extra auto_increment to bigserial drop typemod,
+      type bigint when unsigned to bigint drop typemod,
+      column users.last_login_at to timestamp drop default using zero-dates-to-null,
+      type datetime to timestamptz drop default using zero-dates-to-null,
+      type timestamp to timestamptz drop default using zero-dates-to-null
+
+ INCLUDING ONLY TABLE NAMES MATCHING
+     'users', 'user_groups', 'user_group_members',
+     'proxy_sessions', 'proxy_authorization_codes',
+     'clusters', 'general_settings', 'ldap_settings', 'o_auth_providers',
+     'roles', 'role_assignments', 'resource_histories', 'resource_templates',
+     'pending_sessions', 'access_requests', 'feishu_notification_settings'
+
+ ALTER SCHEMA 'kite' RENAME TO 'public';
